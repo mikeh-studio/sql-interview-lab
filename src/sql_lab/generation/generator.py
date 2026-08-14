@@ -46,6 +46,24 @@ class ExerciseGenerator:
                 f"LLM response failed exercise schema validation: {exc}"
             ) from exc
 
+        presentation_errors: list[str] = []
+        if len(exercise_set.business_context) > 240:
+            presentation_errors.append(
+                "business_context must be 240 characters or fewer"
+            )
+        for index, question in enumerate(exercise_set.questions, start=1):
+            if question.task_summary is None:
+                presentation_errors.append(f"question {index} is missing task_summary")
+            if not 3 <= len(question.requirements) <= 6:
+                presentation_errors.append(
+                    f"question {index} must have 3 to 6 requirements"
+                )
+        if presentation_errors:
+            raise ExerciseGenerationError(
+                "Generated exercise did not honor presentation fields: "
+                + "; ".join(presentation_errors)
+            )
+
         mismatches: list[str] = []
         if exercise_set.company.casefold() != request.company.casefold():
             mismatches.append("company")

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sql_lab.exercises import get_static_exercise_set
+from sql_lab.feedback import QueryDoctorError, QueryDoctorFeedback
 from sql_lab.history import SQLiteHistoryRepository
 from sql_lab.models import ExerciseRequest, ExerciseSet
 from sql_lab.web.app import create_app
@@ -33,6 +34,23 @@ class RecordingExerciseFactory:
         )
         self.exercise_sets.append(exercise_set)
         return exercise_set
+
+
+class RecordingQueryReviewer:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def __call__(self, exercise, sql, provider, execution, grade):
+        self.calls.append((exercise, sql, provider, execution, grade))
+        return QueryDoctorFeedback(
+            summary="The deterministic evidence and query structure have been reviewed.",
+            categories=["filtering mistake"] if not grade["passed"] else [],
+            strengths=["The selected columns follow the requested output grain."],
+            issues=[] if grade["passed"] else ["The result differs on an edge case."],
+            next_steps=[]
+            if grade["passed"]
+            else ["Inspect filters before aggregation."],
+        )
 
 
 @pytest.fixture
@@ -75,7 +93,9 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
     assert "Target role" not in page.text
     assert "SQL dialect" in page.text
     assert "Concepts to practice" not in page.text
-    assert "/assets/app.js?v=0.6.0" in page.text
+    assert "Query Doctor" in page.text
+    assert "See More" in page.text
+    assert "/assets/app.js?v=0.8.0" in page.text
     assert client.get("/favicon.ico").status_code == 200
     assert options.status_code == 200
     assert [company["name"] for company in options.json()["companies"]] == [
@@ -145,6 +165,10 @@ def test_public_exercise_has_real_table_samples_but_no_hidden_solution(
     assert "seed_sql" not in serialized
     assert "hidden_datasets" not in serialized
     assert len(created["questions"]) == 3
+    assert created["questions"][0]["task_summary"] == (
+        "Measure completed-order conversion and revenue by customer segment."
+    )
+    assert len(created["questions"][0]["requirements"]) == 5
     assert len({question["session_id"] for question in created["questions"]}) == 3
     assert len(created["tables"]) == 2
     customers = created["tables"][0]
@@ -160,6 +184,29 @@ def test_public_exercise_has_real_table_samples_but_no_hidden_solution(
         "small_business",
         "2024-10-01",
     ]
+
+
+def test_legacy_questions_receive_progressive_disclosure_fallbacks(tmp_path) -> None:
+    payload = get_static_exercise_set().model_dump(mode="json")
+    for question in payload["questions"]:
+        question.pop("task_summary")
+        question.pop("requirements")
+    legacy_set = ExerciseSet.model_validate(payload)
+
+    def legacy_factory(*_):
+        return legacy_set
+
+    application = create_app(
+        legacy_factory, SQLiteHistoryRepository(tmp_path / "history.db")
+    )
+    with TestClient(application) as client:
+        created = create_session(client)
+
+    question = created["questions"][0]
+    assert question["task_summary"] == (
+        "For every customer segment, report January 2025 completed-order performance."
+    )
+    assert question["requirements"] == [question["question"]]
 
 
 def test_run_executes_sql_and_reseeds_visible_data_each_time(web_client) -> None:
@@ -217,6 +264,60 @@ def test_submit_grades_visible_and_hidden_datasets(web_client) -> None:
     history = client.get("/api/history").json()["sessions"]
     assert history[0]["submission_count"] == 2
     assert history[0]["questions_passed"] == 0
+
+
+def test_query_doctor_executes_and_grades_before_cli_review(tmp_path) -> None:
+    factory = RecordingExerciseFactory()
+    reviewer = RecordingQueryReviewer()
+    application = create_app(
+        factory,
+        SQLiteHistoryRepository(tmp_path / "history.db"),
+        reviewer,
+    )
+    with TestClient(application) as client:
+        created = create_session(client, provider="claude")
+        session_id = created["questions"][0]["session_id"]
+        reference_sql = factory.exercise_sets[-1].exercises()[0].reference_sql
+
+        response = client.post(
+            f"/api/sessions/{session_id}/doctor", json={"sql": reference_sql}
+        )
+        syntax_error = client.post(
+            f"/api/sessions/{session_id}/doctor", json={"sql": "SELEC nope"}
+        )
+
+    assert response.status_code == 200
+    diagnosis = response.json()
+    assert diagnosis["provider"] == "claude"
+    assert diagnosis["execution"]["ok"] is True
+    assert diagnosis["grade"]["passed"] is True
+    assert diagnosis["feedback"]["summary"].startswith("The deterministic evidence")
+    assert "reference_sql" not in json.dumps(diagnosis)
+    assert reviewer.calls[0][2] == "claude"
+    assert reviewer.calls[0][3]["ok"] is True
+    assert reviewer.calls[0][4]["passed"] is True
+    assert syntax_error.status_code == 200
+    assert syntax_error.json()["execution"]["ok"] is False
+    assert syntax_error.json()["grade"]["passed"] is False
+
+
+def test_query_doctor_provider_failure_is_reported(tmp_path) -> None:
+    def failing_reviewer(*_):
+        raise QueryDoctorError("doctor provider failed")
+
+    application = create_app(
+        RecordingExerciseFactory(),
+        SQLiteHistoryRepository(tmp_path / "history.db"),
+        failing_reviewer,
+    )
+    with TestClient(application) as client:
+        session_id = create_session(client)["questions"][0]["session_id"]
+        response = client.post(
+            f"/api/sessions/{session_id}/doctor", json={"sql": "SELECT 1"}
+        )
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "doctor provider failed"
 
 
 def test_hints_and_solution_require_explicit_endpoints(web_client) -> None:

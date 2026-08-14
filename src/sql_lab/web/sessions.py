@@ -20,6 +20,7 @@ class SessionNotFoundError(KeyError):
 @dataclass
 class LabSession:
     exercise: Exercise
+    provider_name: str = "codex"
     practice_session_id: str | None = None
     history_question_id: str | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
@@ -89,12 +90,14 @@ class SessionStore:
         self,
         exercise: Exercise,
         *,
+        provider_name: str = "codex",
         practice_session_id: str | None = None,
         history_question_id: str | None = None,
         hint_index: int = 0,
     ) -> LabSession:
         session = LabSession(
             exercise=exercise,
+            provider_name=provider_name,
             practice_session_id=practice_session_id,
             history_question_id=history_question_id,
             hint_index=hint_index,

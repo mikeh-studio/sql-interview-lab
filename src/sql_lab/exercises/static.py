@@ -21,6 +21,14 @@ STATIC_EXERCISE = {
         "places, include customers and segments with no qualifying orders, and order the "
         "result by segment."
     ),
+    "task_summary": "Measure completed-order conversion and revenue by customer segment.",
+    "requirements": [
+        "Return segment, customer_count, converting_customers, conversion_rate, and completed_revenue.",
+        "Count a customer as converting when they have at least one completed January 2025 order.",
+        "Use order_date >= 2025-01-01 and order_date < 2025-02-01.",
+        "Include customers and segments with no qualifying orders and treat their revenue as zero.",
+        "Round conversion_rate to three decimal places and order by segment.",
+    ],
     "tables": [
         {
             "name": "customers",
@@ -146,6 +154,8 @@ STATIC_EXERCISE_SET = {
             "difficulty": STATIC_EXERCISE["difficulty"],
             "concepts": STATIC_EXERCISE["concepts"],
             "question": STATIC_EXERCISE["question"],
+            "task_summary": STATIC_EXERCISE["task_summary"],
+            "requirements": STATIC_EXERCISE["requirements"],
             "reference_sql": STATIC_EXERCISE["reference_sql"],
             "grading": STATIC_EXERCISE["grading"],
             "explanation": STATIC_EXERCISE["explanation"],
@@ -160,6 +170,12 @@ STATIC_EXERCISE_SET = {
                 "with one row per segment, ordered by customer_count descending and then "
                 "segment ascending. Include every customer regardless of order activity."
             ),
+            "task_summary": "Summarize the customer mix across marketplace segments.",
+            "requirements": [
+                "Return segment and customer_count with one row per segment.",
+                "Include every customer regardless of order activity.",
+                "Order by customer_count descending and then segment ascending.",
+            ],
             "reference_sql": """
                 SELECT segment, COUNT(*) AS customer_count
                 FROM customers
@@ -187,6 +203,13 @@ STATIC_EXERCISE_SET = {
                 "Treat missing revenue as zero, retain segments with no completed orders, "
                 "and order by segment ascending."
             ),
+            "task_summary": "Measure completed January order volume and revenue by customer segment.",
+            "requirements": [
+                "Return segment, completed_order_count, and completed_revenue.",
+                "Include orders with status = 'completed' from 2025-01-01 inclusive to 2025-02-01 exclusive.",
+                "Retain segments with no completed orders and treat missing revenue as zero.",
+                "Order by segment ascending.",
+            ],
             "reference_sql": """
                 SELECT
                     c.segment,
