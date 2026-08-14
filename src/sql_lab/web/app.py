@@ -18,6 +18,7 @@ from sql_lab.config import default_history_db_path, history_limit_from_env
 from sql_lab.engines.base import SQLExecutionError
 from sql_lab.engines.factory import SUPPORTED_DIALECTS, execution_mode
 from sql_lab.exercises import get_static_exercise_set
+from sql_lab.feedback import QueryDoctorError, QueryDoctorFeedback, review_query
 from sql_lab.generation import ExerciseGenerationError
 from sql_lab.grading.grader import GradeResult, ReferenceSolutionError
 from sql_lab.history import (
@@ -27,7 +28,7 @@ from sql_lab.history import (
     SQLiteHistoryRepository,
 )
 from sql_lab.llm import LLMProviderError
-from sql_lab.models import Dialect, Difficulty, ExerciseRequest, ExerciseSet
+from sql_lab.models import Dialect, Difficulty, Exercise, ExerciseRequest, ExerciseSet
 from sql_lab.services import generate_exercise_set
 from sql_lab.web.sessions import LabSession, SessionNotFoundError, SessionStore
 
@@ -115,6 +116,9 @@ class SQLPayload(APIModel):
 
 
 ExerciseFactory = Callable[[ExerciseRequest, str, bool], ExerciseSet]
+QueryReviewer = Callable[
+    [Exercise, str, str, dict[str, object], dict[str, object]], QueryDoctorFeedback
+]
 
 
 def _default_exercise_factory(
@@ -135,6 +139,27 @@ def _default_exercise_factory(
     return generate_exercise_set(request, provider_name)
 
 
+def _default_query_reviewer(
+    exercise: Exercise,
+    sql: str,
+    provider_name: str,
+    execution: dict[str, object],
+    grade: dict[str, object],
+) -> QueryDoctorFeedback:
+    return review_query(exercise, sql, provider_name, execution, grade)
+
+
+def _task_summary(exercise: Exercise) -> str:
+    if exercise.task_summary:
+        return exercise.task_summary
+    first_sentence, separator, _ = exercise.question.partition(".")
+    return f"{first_sentence}." if separator else exercise.question
+
+
+def _requirements(exercise: Exercise) -> list[str]:
+    return exercise.requirements or [exercise.question]
+
+
 def _public_question(
     session: LabSession, state: HistoryQuestionState
 ) -> dict[str, object]:
@@ -144,6 +169,8 @@ def _public_question(
         "id": exercise.id,
         "difficulty": exercise.difficulty.value,
         "question": exercise.question,
+        "task_summary": _task_summary(exercise),
+        "requirements": _requirements(exercise),
         "hint_count": len(exercise.hints),
         "hints_revealed": state.hint_count,
         "solution_revealed": state.solution_revealed,
@@ -214,6 +241,7 @@ def _exercise_response(
 ) -> dict[str, object]:
     return {
         "history_id": history_id,
+        "provider": question_sessions[0].provider_name,
         "set_id": exercise_set.id,
         "company": exercise_set.company,
         "dialect": exercise_set.dialect.value,
@@ -236,8 +264,10 @@ def _exercise_response(
 def create_app(
     exercise_factory: ExerciseFactory | None = None,
     history_repository: HistoryRepository | None = None,
+    query_reviewer: QueryReviewer | None = None,
 ) -> FastAPI:
     factory = exercise_factory or _default_exercise_factory
+    reviewer = query_reviewer or _default_query_reviewer
     sessions = SessionStore()
     history = history_repository or SQLiteHistoryRepository(
         default_history_db_path(), max_sessions=history_limit_from_env()
@@ -350,6 +380,7 @@ def create_app(
             question_sessions = [
                 sessions.create(
                     exercise,
+                    provider_name=payload.provider,
                     practice_session_id=stored.summary.id if stored else None,
                     history_question_id=state.question_id,
                     hint_index=state.hint_count,
@@ -403,6 +434,43 @@ def create_app(
             )
         return jsonable_encoder(serialized)
 
+    @application.post("/api/sessions/{session_id}/doctor")
+    def query_doctor(session_id: str, payload: SQLPayload):
+        session = get_session(session_id)
+        try:
+            result = session.run(payload.sql)
+            execution: dict[str, object] = {
+                "ok": True,
+                "columns": result.columns,
+                "row_count": len(result.rows),
+                "rows_preview": result.rows[:10],
+            }
+        except SQLExecutionError as exc:
+            execution = {"ok": False, "error": str(exc)}
+
+        try:
+            grade = _serialize_grade(session.grade(payload.sql))
+            feedback = reviewer(
+                session.exercise,
+                payload.sql,
+                session.provider_name,
+                execution,
+                grade,
+            )
+        except ReferenceSolutionError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except (QueryDoctorError, LLMProviderError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        return jsonable_encoder(
+            {
+                "provider": session.provider_name,
+                "execution": execution,
+                "grade": grade,
+                "feedback": feedback,
+            }
+        )
+
     @application.post("/api/sessions/{session_id}/hint")
     def reveal_hint(session_id: str):
         session = get_session(session_id)
@@ -454,6 +522,7 @@ def create_app(
         question_sessions = [
             sessions.create(
                 exercise,
+                provider_name=stored.summary.provider,
                 practice_session_id=stored.summary.id,
                 history_question_id=state.question_id,
                 hint_index=state.hint_count,

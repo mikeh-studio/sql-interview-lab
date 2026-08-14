@@ -19,6 +19,8 @@ The current MVP includes Phase 1 and Phase 2:
 - optional free-text context applied to the complete question set
 - exactly three questions sharing one schema and the same visible/hidden datasets
 - a split question/editor/results workspace with real example rows from DuckDB
+- task-first prompts with compact business context and expandable exact requirements
+- a Query Doctor tab that executes and grades first, then requests structured CLI coaching
 - resumable local browser history with append-only submission records
 - a Rich interactive practice shell
 
@@ -39,6 +41,9 @@ user SQL -----------------------> fresh DuckDB -> actual result
 reference SQL -> separate fresh DuckDB --------> expected result
                                                    |
 actual result + expected result -> deterministic comparator -> pass/fail + diff
+                                                   |
+                                                   v
+                                optional Query Doctor CLI explanation
 ```
 
 The user's SQL never has to resemble the reference SQL. Different queries pass when they
@@ -65,6 +70,8 @@ src/sql_lab/
 ├── grading/
 │   ├── compare.py            # deterministic result comparison
 │   └── grader.py             # isolated execution across all datasets
+├── feedback/
+│   └── query_doctor.py       # post-grade structured CLI coaching
 ├── history/
 │   ├── base.py               # backend-neutral HistoryRepository contract
 │   └── sqlite_repository.py  # local SQLite snapshots and submissions
@@ -131,7 +138,9 @@ The browser journey is deliberately staged:
 3. Generate three questions over one shared dataset, or use the instant Airbnb demo.
 4. Move among the three questions while inspecting the same DDL and example rows.
 5. Write and run SQL, then submit each answer against visible and hidden datasets.
-6. Open **Previous sessions** to resume or delete locally saved work.
+6. Open **Query Doctor** to run the same deterministic checks and ask the selected CLI
+   provider for focused coaching without revealing the reference SQL.
+7. Open **Previous sessions** to resume or delete locally saved work.
 
 Run resets the visible database from seed data before every execution. The web response
 does not include seed SQL, hidden datasets, or reference SQL. The reference solution is
@@ -326,11 +335,12 @@ persistence across restarts, append-only submissions, retention pruning, opt-out
 and deletion. Browser API tests also cover
 company gating, dialect selection and execution labels, three-question sets,
 shared table previews, custom company and optional-context forwarding, session reseeding,
-query errors, hints, explicit solution access, and visible/hidden submission results.
+query errors, hints, explicit solution access, visible/hidden submission results, and the
+deterministic-before-LLM Query Doctor contract.
 
 ## Roadmap
 
-- Phase 3: persistent company packs, post-grade LLM feedback, and explicit
+- Phase 3: persistent company packs and explicit
   Practice/Interview/Review policies
 - Phase 4: optional OpenAI API provider and native engines for additional dialects
 - Later: timers, optional BigQuery history export, more than one hidden dataset, editor

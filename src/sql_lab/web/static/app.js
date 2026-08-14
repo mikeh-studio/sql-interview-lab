@@ -14,6 +14,7 @@ const state = {
   starterSql: "",
   lastOutput: null,
   lastGrade: null,
+  lastDoctor: null,
 };
 
 const elements = {};
@@ -44,10 +45,12 @@ function collectElements() {
     "difficultyChoices", "demoButton", "generateButton", "labView", "labCompany",
     "difficultyBadge", "questionNavigator", "engineStatus", "engineStatusLabel",
     "dialectBadge", "editorDialect",
-    "companyBadge", "challengeTitle", "businessContext", "questionText",
+    "companyBadge", "challengePosition", "challengeTitle", "businessContext",
+    "requirementsToggleButton", "requirementsPanel", "requirementsList",
     "hintArea", "hintButton", "solutionButton", "tablePreviews",
     "sqlEditor", "editorLines", "resetButton", "runButton", "submitButton",
-    "outputResult", "testResult", "executionMeta", "testStatusDot",
+    "outputResult", "testResult", "doctorPanel", "doctorResult", "doctorButton",
+    "executionMeta", "testStatusDot", "doctorStatusDot",
     "newQuestionButton", "loadingOverlay", "loadingTitle", "loadingMessage",
     "solutionModal", "solutionModalBody", "closeSolutionButton", "cancelSolutionButton",
     "confirmSolutionButton", "toast", "questionPanel", "schemaPanel",
@@ -69,8 +72,10 @@ function bindEvents() {
   elements.demoButton.addEventListener("click", () => generateExercise(true));
   elements.runButton.addEventListener("click", runQuery);
   elements.submitButton.addEventListener("click", submitQuery);
+  elements.doctorButton.addEventListener("click", reviewQuery);
   elements.resetButton.addEventListener("click", resetEditor);
   elements.hintButton.addEventListener("click", revealHint);
+  elements.requirementsToggleButton.addEventListener("click", toggleRequirements);
   elements.solutionButton.addEventListener("click", openSolutionModal);
   elements.closeSolutionButton.addEventListener("click", closeSolutionModal);
   elements.cancelSolutionButton.addEventListener("click", closeSolutionModal);
@@ -306,6 +311,7 @@ function enterLab(response) {
     ...question,
     sql: question.latest_sql || "",
     passed: question.passed ?? null,
+    detailsExpanded: false,
   }));
   state.activeQuestionIndex = 0;
   elements.setupView.hidden = true;
@@ -318,6 +324,7 @@ function enterLab(response) {
   elements.dialectBadge.classList.toggle("emulated", response.execution_mode === "emulated");
   elements.editorDialect.textContent = response.dialect_name;
   elements.businessContext.textContent = response.business_context;
+  elements.businessContext.title = response.business_context;
   renderTablePreviews(response.tables);
   activateQuestion(0);
 }
@@ -338,8 +345,9 @@ function activateQuestion(index) {
   const exercise = state.exercise;
   elements.difficultyBadge.textContent = exercise.difficulty;
   elements.companyBadge.textContent = exercise.company;
-  elements.challengeTitle.textContent = `Question ${index + 1} of ${state.questions.length}`;
-  elements.questionText.textContent = exercise.question;
+  elements.challengePosition.textContent = `QUESTION ${index + 1} OF ${state.questions.length}`;
+  elements.challengeTitle.textContent = exercise.task_summary;
+  renderRequirements(exercise.requirements, question.detailsExpanded);
   elements.hintArea.replaceChildren();
   const remainingHints = Math.max(0, exercise.hint_count - (exercise.hints_revealed || 0));
   elements.hintButton.disabled = remainingHints === 0;
@@ -358,6 +366,28 @@ function activateQuestion(index) {
   renderQuestionNavigator();
   activatePaneTab("question");
   elements.sqlEditor.focus();
+}
+
+function toggleRequirements() {
+  const question = state.questions[state.activeQuestionIndex];
+  question.detailsExpanded = !question.detailsExpanded;
+  updateRequirementsDisclosure(question.detailsExpanded);
+}
+
+function renderRequirements(requirements, expanded) {
+  elements.requirementsList.replaceChildren();
+  requirements.forEach((requirement) => {
+    const item = document.createElement("li");
+    item.textContent = requirement;
+    elements.requirementsList.append(item);
+  });
+  updateRequirementsDisclosure(expanded);
+}
+
+function updateRequirementsDisclosure(expanded) {
+  elements.requirementsPanel.hidden = !expanded;
+  elements.requirementsToggleButton.textContent = expanded ? "Show Less" : "See More";
+  elements.requirementsToggleButton.setAttribute("aria-expanded", String(expanded));
 }
 
 function renderQuestionNavigator() {
@@ -455,10 +485,13 @@ function activatePaneTab(name) {
 
 function activateResultTab(name) {
   document.querySelectorAll("[data-result-tab]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.resultTab === name);
+    const active = button.dataset.resultTab === name;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
   });
   elements.outputResult.hidden = name !== "output";
   elements.testResult.hidden = name !== "tests";
+  elements.doctorPanel.hidden = name !== "doctor";
 }
 
 function updateEditorLines() {
@@ -606,6 +639,107 @@ function renderGrade(grade) {
   elements.testResult.append(summary, list);
 }
 
+async function reviewQuery() {
+  const sql = elements.sqlEditor.value.trim();
+  if (!sql) return showToast("Write a SQL query first.", true);
+  setButtonBusy(elements.doctorButton, true, "Reviewing…");
+  activateResultTab("doctor");
+  elements.doctorResult.innerHTML = `
+    <div class="empty-result doctor-loading">
+      <span class="empty-result-icon">⌁</span>
+      <strong>Running deterministic checks…</strong>
+      <p>The CLI provider will review the evidence after execution and grading finish.</p>
+    </div>`;
+  try {
+    const diagnosis = await fetchJson(`/api/sessions/${state.sessionId}/doctor`, {
+      method: "POST",
+      body: JSON.stringify({ sql }),
+    });
+    state.lastDoctor = diagnosis;
+    renderDoctor(diagnosis);
+  } catch (error) {
+    renderError(elements.doctorResult, error.message);
+    elements.doctorStatusDot.className = "fail";
+  } finally {
+    setButtonBusy(elements.doctorButton, false, "Review current query");
+  }
+}
+
+function renderDoctor(diagnosis) {
+  elements.doctorResult.replaceChildren();
+  const passed = diagnosis.grade.passed;
+  elements.doctorStatusDot.className = passed ? "pass" : "fail";
+
+  const summary = document.createElement("div");
+  summary.className = `result-summary ${passed ? "pass" : "fail"}`;
+  const icon = document.createElement("span");
+  icon.className = "result-summary-icon";
+  icon.textContent = passed ? "✓" : "!";
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = passed
+    ? "Deterministic check passed"
+    : diagnosis.execution.ok
+      ? "Deterministic check found mismatches"
+      : "The query could not execute";
+  const detail = document.createElement("p");
+  detail.textContent = diagnosis.execution.ok
+    ? `${diagnosis.execution.row_count} visible row(s) · reviewed with ${providerLabel(diagnosis.provider)} CLI`
+    : diagnosis.execution.error;
+  copy.append(title, detail);
+  summary.append(icon, copy);
+  elements.doctorResult.append(summary);
+
+  const feedback = diagnosis.feedback;
+  const overview = document.createElement("div");
+  overview.className = "doctor-overview";
+  const overviewTitle = document.createElement("strong");
+  overviewTitle.textContent = "Diagnosis";
+  const overviewText = document.createElement("p");
+  overviewText.textContent = feedback.summary;
+  overview.append(overviewTitle, overviewText);
+  if (feedback.categories.length) {
+    const categories = document.createElement("div");
+    categories.className = "doctor-categories";
+    feedback.categories.forEach((category) => {
+      const chip = document.createElement("span");
+      chip.textContent = category;
+      categories.append(chip);
+    });
+    overview.append(categories);
+  }
+  elements.doctorResult.append(overview);
+
+  const sections = [
+    ["What works", feedback.strengths],
+    ["Issues to inspect", feedback.issues],
+    ["Next steps", feedback.next_steps],
+  ];
+  const sectionGrid = document.createElement("div");
+  sectionGrid.className = "doctor-sections";
+  sections.forEach(([heading, items]) => {
+    if (!items.length) return;
+    const section = document.createElement("section");
+    const sectionTitle = document.createElement("h3");
+    sectionTitle.textContent = heading;
+    const list = document.createElement("ul");
+    items.forEach((item) => {
+      const row = document.createElement("li");
+      row.textContent = item;
+      list.append(row);
+    });
+    section.append(sectionTitle, list);
+    sectionGrid.append(section);
+  });
+  elements.doctorResult.append(sectionGrid);
+}
+
+function providerLabel(provider) {
+  if (provider === "codex") return "Codex";
+  if (provider === "claude") return "Claude";
+  return provider;
+}
+
 function formatRow(row) {
   return row === null ? "<missing row>" : JSON.stringify(row);
 }
@@ -689,8 +823,10 @@ async function resetEditor() {
 function resetResults() {
   state.lastOutput = null;
   state.lastGrade = null;
+  state.lastDoctor = null;
   elements.executionMeta.textContent = "";
   elements.testStatusDot.className = "";
+  elements.doctorStatusDot.className = "";
   elements.outputResult.innerHTML = `
     <div class="empty-result">
       <span class="empty-result-icon">▦</span>
@@ -702,6 +838,12 @@ function resetResults() {
       <span class="empty-result-icon">✓</span>
       <strong>Submit when you are ready</strong>
       <p>Your answer will be checked against visible and hidden datasets.</p>
+    </div>`;
+  elements.doctorResult.innerHTML = `
+    <div class="empty-result">
+      <span class="empty-result-icon">⌁</span>
+      <strong>Get a second set of eyes</strong>
+      <p>Your SQL will be executed and graded before the CLI review begins.</p>
     </div>`;
   activateResultTab("output");
 }
