@@ -9,7 +9,7 @@
     />
     <title>SQL Interview Lab</title>
     <link rel="icon" href="/favicon.ico" />
-    <link rel="stylesheet" href="/assets/styles.css?v=0.6.0" />
+    <link rel="stylesheet" href="/assets/styles.css?v=0.8.0" />
   </head>
   <body>
     <div class="app-background" aria-hidden="true"></div>
@@ -218,11 +218,26 @@
               <span id="companyBadge" class="badge"></span>
               <span id="dialectBadge" class="badge native">DuckDB</span>
             </div>
-            <h1 id="challengeTitle">SQL interview question</h1>
-            <p id="businessContext" class="business-context"></p>
+            <div class="business-context">
+              <span class="section-label">CONTEXT</span>
+              <p id="businessContext"></p>
+            </div>
             <div class="question-card">
-              <div class="section-label">YOUR TASK</div>
-              <p id="questionText"></p>
+              <div id="challengePosition" class="section-label">QUESTION 1 OF 3</div>
+              <h1 id="challengeTitle">SQL interview task</h1>
+              <button
+                id="requirementsToggleButton"
+                class="text-button requirements-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="requirementsPanel"
+              >
+                See More
+              </button>
+              <div id="requirementsPanel" class="requirements-panel" hidden>
+                <div class="section-label">REQUIREMENTS</div>
+                <ul id="requirementsList"></ul>
+              </div>
             </div>
             <div id="hintArea" class="hint-area"></div>
             <div class="challenge-actions">
@@ -284,6 +299,9 @@
               <button class="result-tab" data-result-tab="tests" type="button">
                 Test results <span id="testStatusDot"></span>
               </button>
+              <button class="result-tab" data-result-tab="doctor" type="button">
+                Query Doctor <span id="doctorStatusDot"></span>
+              </button>
               <span id="executionMeta" class="execution-meta"></span>
             </div>
             <div id="outputResult" class="result-content">
@@ -298,6 +316,24 @@
                 <span class="empty-result-icon">✓</span>
                 <strong>Submit when you are ready</strong>
                 <p>Your answer will be checked against visible and hidden datasets.</p>
+              </div>
+            </div>
+            <div id="doctorPanel" class="result-content doctor-panel" hidden>
+              <div class="doctor-toolbar">
+                <div>
+                  <strong>Query Doctor</strong>
+                  <p>Database checks first, then focused coaching from your CLI provider.</p>
+                </div>
+                <button id="doctorButton" class="button secondary compact" type="button">
+                  Review current query
+                </button>
+              </div>
+              <div id="doctorResult" class="doctor-result">
+                <div class="empty-result">
+                  <span class="empty-result-icon">⌁</span>
+                  <strong>Get a second set of eyes</strong>
+                  <p>Your SQL will be executed and graded before the CLI review begins.</p>
+                </div>
               </div>
             </div>
           </div>
@@ -371,6 +407,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js?v=0.6.0" defer></script>
+    <script src="/assets/app.js?v=0.8.0" defer></script>
   </body>
 </html>

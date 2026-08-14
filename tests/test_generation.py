@@ -42,8 +42,13 @@ def test_structured_generation_validates_json_and_request() -> None:
 
     assert exercise.id == "airbnb_general_001"
     assert len(exercise.questions) == 3
+    assert exercise.questions[0].task_summary
+    assert exercise.questions[0].requirements
     assert provider.received_schema is not None
     assert provider.received_schema["type"] == "object"
+    question_schema = provider.received_schema["$defs"]["ExerciseQuestion"]
+    assert "task_summary" in question_schema["required"]
+    assert "requirements" in question_schema["required"]
 
 
 def test_provider_schema_requires_every_object_property() -> None:
@@ -90,6 +95,22 @@ def test_generated_set_must_have_exactly_three_questions() -> None:
 
     with pytest.raises(ExerciseGenerationError, match="schema validation"):
         ExerciseGenerator(provider).generate(request())
+
+
+def test_generated_set_requires_progressive_disclosure_fields() -> None:
+    invalid = deepcopy(STATIC_EXERCISE_SET)
+    invalid["business_context"] = "x" * 241
+    invalid["questions"][0]["task_summary"] = None
+    invalid["questions"][1]["requirements"] = []
+    provider = FakeProvider(json.dumps(invalid))
+
+    with pytest.raises(ExerciseGenerationError, match="presentation fields") as error:
+        ExerciseGenerator(provider).generate(request())
+
+    message = str(error.value)
+    assert "business_context" in message
+    assert "missing task_summary" in message
+    assert "3 to 6 requirements" in message
 
 
 def test_generated_dialect_must_match_request() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from sql_lab.exercises import get_static_exercise_set
@@ -78,6 +79,28 @@ def test_history_is_append_only_and_marks_completion(tmp_path) -> None:
     assert restored.questions[0].submission_count == 2
     with sqlite3.connect(repository.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 4
+
+
+def test_history_restores_legacy_questions_without_disclosure_fields(tmp_path) -> None:
+    repository = SQLiteHistoryRepository(tmp_path / "history.db")
+    repository.initialize()
+    created = repository.create_session(get_static_exercise_set(), request(), "codex")
+
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute("SELECT payload_json FROM exercise_sets").fetchone()
+        payload = json.loads(row[0])
+        for question in payload["questions"]:
+            question.pop("task_summary")
+            question.pop("requirements")
+        connection.execute(
+            "UPDATE exercise_sets SET payload_json = ?", (json.dumps(payload),)
+        )
+
+    restored = repository.get_session(created.summary.id)
+
+    assert restored is not None
+    assert restored.exercise_set.questions[0].task_summary is None
+    assert restored.exercise_set.questions[0].requirements == []
 
 
 def test_history_limit_prunes_oldest_session_and_delete_cascades(tmp_path) -> None:

@@ -71,6 +71,8 @@ class Exercise(StrictModel):
     concepts: list[str] = Field(min_length=1)
     business_context: str = Field(min_length=1)
     question: str = Field(min_length=1)
+    task_summary: str | None = Field(default=None, min_length=1, max_length=180)
+    requirements: list[str] = Field(default_factory=list, max_length=8)
     tables: list[TableDefinition] = Field(min_length=1, max_length=6)
     seed_sql: str = Field(min_length=1)
     hidden_datasets: list[DatasetDefinition] = Field(default_factory=list)
@@ -98,6 +100,8 @@ class Exercise(StrictModel):
 
         if any(not concept for concept in self.concepts):
             raise ValueError("concepts cannot contain empty values")
+        if any(not requirement for requirement in self.requirements):
+            raise ValueError("requirements cannot contain empty values")
         return self
 
     def datasets(self) -> Iterator[DatasetDefinition]:
@@ -117,6 +121,8 @@ class ExerciseQuestion(StrictModel):
     difficulty: Difficulty
     concepts: list[str] = Field(min_length=1)
     question: str = Field(min_length=1)
+    task_summary: str | None = Field(default=None, min_length=1, max_length=180)
+    requirements: list[str] = Field(default_factory=list, max_length=8)
     reference_sql: str = Field(min_length=1)
     grading: GradingConfig = Field(default_factory=GradingConfig)
     explanation: str = Field(min_length=1)
@@ -128,6 +134,8 @@ class ExerciseQuestion(StrictModel):
             raise ValueError("question id must be a lowercase slug")
         if any(not concept for concept in self.concepts):
             raise ValueError("concepts cannot contain empty values")
+        if any(not requirement for requirement in self.requirements):
+            raise ValueError("requirements cannot contain empty values")
         return self
 
 
@@ -172,6 +180,8 @@ class ExerciseSet(StrictModel):
                 concepts=question.concepts,
                 business_context=self.business_context,
                 question=question.question,
+                task_summary=question.task_summary,
+                requirements=question.requirements,
                 tables=self.tables,
                 seed_sql=self.seed_sql,
                 hidden_datasets=self.hidden_datasets,

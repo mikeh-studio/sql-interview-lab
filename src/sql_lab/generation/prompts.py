@@ -30,6 +30,16 @@ Requirements:
   each dataset.
 - Create exactly three distinct questions over that same shared schema and shared data. Cover
   a useful general mix of SQL concepts without requiring the user to select concepts.
+- Keep business_context to one or two short sentences (240 characters maximum). It should
+  orient the user without repeating the task or describing every table.
+- For each question, set task_summary to a concise, interview-style metric objective of 8 to
+  18 words. Name the business metric and grouping dimension, but omit exact output aliases,
+  predicates, date boundaries, rounding, NULL rules, and ordering. Example: "Measure completed
+  order conversion and revenue by customer segment."
+- For each question, provide 3 to 6 requirements. These must state the exact output columns,
+  metric definitions, filters, boundaries, NULL handling, rounding, and ordering needed for
+  deterministic grading. Keep question as the complete canonical specification and ensure its
+  meaning exactly matches task_summary plus requirements without contradictions.
 - All DDL, seed_sql, and reference_sql must be valid in the requested dialect. For non-DuckDB
   dialects, execution will be transparently emulated on DuckDB through strict SQLGlot
   transpilation. Keep DDL and seed inserts portable; do not use cloud services, stored
@@ -39,8 +49,8 @@ Requirements:
   inserts for the same empty tables. Do not repeat CREATE TABLE statements in seed SQL.
 - Include adversarial cases relevant to the question, such as NULLs, duplicates, missing
   activity, ties, boundary dates, multiple records per entity, or join fanout.
-- Every question must fully define its output columns, calculations, rounding, date boundaries,
-  and ordering expectations. Set each grading.order_matters accordingly.
+- Every canonical question and its requirements must fully define output columns, calculations,
+  rounding, date boundaries, and ordering expectations. Set each grading.order_matters accordingly.
 - Every reference_sql must answer its question correctly on both visible and hidden datasets.
 - Every reference result must be non-empty on every dataset.
 - Use a numeric_tolerance of 0.000001 unless the problem needs a different explicit tolerance.
