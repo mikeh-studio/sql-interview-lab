@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
@@ -45,6 +45,10 @@ def _json_default(value: object) -> object:
         return float(value)
     if isinstance(value, datetime):
         return _timestamp(value)
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return value.total_seconds()
     raise TypeError(f"{type(value).__name__} is not JSON serializable")
 
 

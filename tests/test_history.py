@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date
 
 from sql_lab.exercises import get_static_exercise_set
 from sql_lab.history import SQLiteHistoryRepository
@@ -79,6 +80,41 @@ def test_history_is_append_only_and_marks_completion(tmp_path) -> None:
     assert restored.questions[0].submission_count == 2
     with sqlite3.connect(repository.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 4
+
+
+def test_history_serializes_temporal_values_in_grading_diffs(tmp_path) -> None:
+    repository = SQLiteHistoryRepository(tmp_path / "history.db")
+    repository.initialize()
+    created = repository.create_session(get_static_exercise_set(), request(), "codex")
+    question = created.questions[0]
+
+    repository.record_submission(
+        created.summary.id,
+        question.question_id,
+        "SELECT DATE '2025-01-01'",
+        False,
+        {
+            "passed": False,
+            "datasets": [
+                {
+                    "comparison": {
+                        "expected": [date(2025, 1, 1)],
+                        "actual": [date(2025, 1, 2)],
+                    }
+                }
+            ],
+        },
+    )
+
+    with sqlite3.connect(repository.path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT grading_summary_json FROM submissions"
+            ).fetchone()[0]
+        )
+    comparison = payload["datasets"][0]["comparison"]
+    assert comparison["expected"] == ["2025-01-01"]
+    assert comparison["actual"] == ["2025-01-02"]
 
 
 def test_history_restores_legacy_questions_without_disclosure_fields(tmp_path) -> None:
