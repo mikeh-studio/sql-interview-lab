@@ -20,6 +20,8 @@ The current MVP includes Phase 1 and Phase 2:
 - exactly three questions sharing one schema and the same visible/hidden datasets
 - a split question/editor/results workspace with real example rows from DuckDB
 - task-first prompts with compact business context and expandable exact requirements
+- an additive Advanced Mode with role-calibrated SQL build, debugging, and analytical-case tasks
+- staged interviewer clarifications plus a non-scoring case self-review rubric
 - a Query Doctor tab that executes and grades first, then requests structured CLI coaching
 - resumable local browser history with append-only submission records
 - a Rich interactive practice shell
@@ -142,6 +144,19 @@ The browser journey is deliberately staged:
    provider for focused coaching without revealing the reference SQL.
 7. Open **Previous sessions** to resume or delete locally saved work.
 
+Standard Mode preserves the original three-question SQL practice flow. Advanced Mode adds a
+target role and generates one SQL construction problem, one inherited or AI-generated SQL
+debugging problem, and one decision-oriented analytical case with a deterministically graded SQL
+deliverable. Advanced requirements and interviewer answers remain hidden until explicitly
+requested. The analytical-case rubric is for self-review and optional coaching; it never overrides
+the database grader or produces an automated hiring score.
+
+Advanced generation is progressive: it creates a compact shared dataset and validates Question 1
+first, then opens the lab while Questions 2 and 3 generate concurrently. A matching dataset can be
+reused from the local cache when **Reuse a matching local dataset** is enabled. Review-only case
+rubric content is assembled only when the solution is opened, keeping it out of the initial LLM
+payload.
+
 Run resets the visible database from seed data before every execution. The web response
 does not include seed SQL, hidden datasets, or reference SQL. The reference solution is
 returned only after the user explicitly chooses **View solution** and confirms.
@@ -159,6 +174,14 @@ submission records. History also remembers the latest submitted SQL, pass/fail s
 revealed-hint count, and whether the solution was revealed. It does **not** persist
 in-memory DuckDB databases, routine `.run` output, expected result tables, credentials, or
 provider environment variables.
+
+The same private SQLite file also keeps a compact generation audit log: stages, elapsed time,
+provider and CLI identity, resolved model when available, cache usage, prompt count, and token
+usage reported by the CLI. Prompts, LLM responses, reference SQL, and generated rows are not copied
+into that audit log. The separate dataset cache necessarily stores the generated shared DDL and
+rows locally so they can be reused; it retains the 50 most recently used datasets. Disable the
+reuse checkbox to bypass it for a new generation. **Clear all history** also removes generation
+logs and cached datasets.
 
 Use the **Save this session locally** checkbox to opt out before generating a set. From
 **Previous sessions**, a saved set can be resumed after a server restart, deleted
@@ -241,19 +264,23 @@ sql-lab \
 
 The adapter invokes `codex exec` without a shell, passes the prompt on stdin, uses a
 read-only sandbox, requests a response matching the Exercise JSON Schema, and validates
-the returned JSON again locally. Codex CLI authentication is reused; this application
-does not require an API credential.
+the returned JSON again locally. It uses the Codex JSONL event stream to capture reported
+token usage and the final-message file to keep structured output separate from progress events.
+Codex CLI authentication is reused; this application does not require an API credential.
 
 The command prefix and timeout are configurable without changing application code:
 
 ```bash
 export SQL_LAB_CODEX_COMMAND='codex exec --ephemeral --sandbox read-only --skip-git-repo-check --color never'
 export SQL_LAB_LLM_TIMEOUT=600
+export SQL_LAB_ADVANCED_LLM_TIMEOUT=1200
 sql-lab --llm codex
 ```
 
-The default generation timeout is 600 seconds because a request now builds and validates
-three complete questions. Override it with `SQL_LAB_LLM_TIMEOUT` when needed.
+Standard Mode has a 600-second generation timeout. Each Advanced Mode provider call has a
+separate 1,200-second default; Question 1 and its compact dataset are generated first, while the
+remaining two calls run concurrently after Question 1 passes SQL validation. Override the
+deadlines independently with `SQL_LAB_LLM_TIMEOUT` and `SQL_LAB_ADVANCED_LLM_TIMEOUT`.
 
 `SQL_LAB_CODEX_COMMAND` is parsed as an argv vector and executed with `shell=False`.
 Do not include the final prompt sentinel or `--output-schema`; the adapter supplies both.
@@ -330,13 +357,14 @@ pytest
 The suite covers correct and equivalent SQL, incorrect results and mismatch examples,
 ordering, duplicate rows, NULLs, numeric tolerance, syntax errors, schema validation,
 DuckDB reset/isolation, visible-versus-hidden grading, CLI subprocess failures, and
-malformed LLM JSON, and all five emulated dialect paths. History tests cover SQLite
+malformed LLM JSON, Codex token telemetry, and all five emulated dialect paths. History tests cover SQLite
 persistence across restarts, append-only submissions, retention pruning, opt-out, resume,
-and deletion. Browser API tests also cover
+deletion, generation-event persistence, and dataset caching. Browser API tests also cover
 company gating, dialect selection and execution labels, three-question sets,
 shared table previews, custom company and optional-context forwarding, session reseeding,
 query errors, hints, explicit solution access, visible/hidden submission results, and the
-deterministic-before-LLM Query Doctor contract.
+deterministic-before-LLM Query Doctor contract. The progressive API test verifies Question 1-first
+delivery, concurrent set completion, cache reuse, and aggregated model/token metadata.
 
 ## Roadmap
 

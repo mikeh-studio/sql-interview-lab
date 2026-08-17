@@ -5,6 +5,8 @@ const state = {
   selectedCompany: null,
   dialect: "duckdb",
   difficulty: "medium",
+  mode: "standard",
+  roleTrack: "product_analytics",
   historyId: null,
   questionSet: null,
   questions: [],
@@ -15,11 +17,15 @@ const state = {
   lastOutput: null,
   lastGrade: null,
   lastDoctor: null,
+  generationId: null,
+  generationPending: false,
+  generationStartedAt: null,
 };
 
 const elements = {};
 let toastTimer = null;
 let loadingTimer = null;
+let generationPollCancelled = false;
 
 document.addEventListener("DOMContentLoaded", async () => {
   collectElements();
@@ -28,6 +34,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     state.options = await fetchJson("/api/options");
     renderCompanyCards();
     renderDialects();
+    renderRoleTracks();
   } catch (error) {
     showToast(error.message, true);
   }
@@ -40,20 +47,26 @@ function collectElements() {
     "closeHistoryButton", "clearHistoryButton",
     "companyHelp", "customCompanyField", "customCompanyInput", "backToCompanies",
     "selectedCompanySummary", "dialectSelect", "dialectHelp", "additionalContextInput",
-    "saveHistoryInput",
-    "providerSelect",
+    "saveHistoryInput", "reuseDatasetPreference", "reuseDatasetInput",
+    "providerSelect", "modeChoices", "modeHelp", "roleTrackField", "roleTrackSelect",
+    "roleTrackHelp", "generationStatus", "generationStatusMessage",
+    "dismissGenerationStatus",
     "difficultyChoices", "demoButton", "generateButton", "labView", "labCompany",
     "difficultyBadge", "questionNavigator", "engineStatus", "engineStatusLabel",
     "dialectBadge", "editorDialect",
-    "companyBadge", "challengePosition", "challengeTitle", "businessContext",
+    "companyBadge", "questionTypeBadge", "challengePosition", "challengeTitle", "businessContext",
     "requirementsToggleButton", "requirementsPanel", "requirementsList",
+    "clarificationsSection", "clarificationsList",
     "hintArea", "hintButton", "solutionButton", "tablePreviews",
     "sqlEditor", "editorLines", "resetButton", "runButton", "submitButton",
     "outputResult", "testResult", "doctorPanel", "doctorResult", "doctorButton",
     "executionMeta", "testStatusDot", "doctorStatusDot",
     "newQuestionButton", "loadingOverlay", "loadingTitle", "loadingMessage",
-    "solutionModal", "solutionModalBody", "closeSolutionButton", "cancelSolutionButton",
-    "confirmSolutionButton", "toast", "questionPanel", "schemaPanel",
+    "loadingElapsed", "loadingProviderMeta", "loadingEvents",
+    "generationProgress", "generationProgressTitle", "generationProgressMessage",
+    "generationProgressMeta",
+    "solutionModal", "solutionModalBody", "closeSolutionButton", "toast", "questionPanel",
+    "schemaPanel",
   ];
   for (const id of ids) elements[id] = document.getElementById(id);
 }
@@ -68,8 +81,11 @@ function bindEvents() {
   elements.backToCompanies.addEventListener("click", showCompanyStep);
   elements.dialectSelect.addEventListener("change", handleDialect);
   elements.difficultyChoices.addEventListener("click", handleDifficulty);
+  elements.modeChoices.addEventListener("click", handleMode);
+  elements.roleTrackSelect.addEventListener("change", handleRoleTrack);
   elements.generateButton.addEventListener("click", () => generateExercise(false));
   elements.demoButton.addEventListener("click", () => generateExercise(true));
+  elements.dismissGenerationStatus.addEventListener("click", clearGenerationStatus);
   elements.runButton.addEventListener("click", runQuery);
   elements.submitButton.addEventListener("click", submitQuery);
   elements.doctorButton.addEventListener("click", reviewQuery);
@@ -78,8 +94,6 @@ function bindEvents() {
   elements.requirementsToggleButton.addEventListener("click", toggleRequirements);
   elements.solutionButton.addEventListener("click", openSolutionModal);
   elements.closeSolutionButton.addEventListener("click", closeSolutionModal);
-  elements.cancelSolutionButton.addEventListener("click", closeSolutionModal);
-  elements.confirmSolutionButton.addEventListener("click", revealSolution);
   elements.newQuestionButton.addEventListener("click", startNewQuestion);
   elements.sqlEditor.addEventListener("input", updateEditorLines);
   elements.sqlEditor.addEventListener("scroll", () => {
@@ -193,6 +207,24 @@ function renderDialects() {
   handleDialect();
 }
 
+function renderRoleTracks() {
+  elements.roleTrackSelect.replaceChildren();
+  for (const role of state.options.roles) {
+    const option = document.createElement("option");
+    option.value = role.id;
+    option.textContent = role.name;
+    elements.roleTrackSelect.append(option);
+  }
+  elements.roleTrackSelect.value = state.roleTrack;
+  handleRoleTrack();
+}
+
+function handleRoleTrack() {
+  state.roleTrack = elements.roleTrackSelect.value || "product_analytics";
+  const role = state.options.roles.find((item) => item.id === state.roleTrack);
+  if (role) elements.roleTrackHelp.textContent = role.description;
+}
+
 function selectedDialect() {
   return state.options.dialects.find((dialect) => dialect.id === state.dialect);
 }
@@ -206,7 +238,8 @@ function handleDialect() {
 
 function updateDemoAvailability() {
   elements.demoButton.hidden = !(
-    state.selectedCompany?.demo_available && state.dialect === "duckdb"
+    state.selectedCompany?.demo_available && state.dialect === "duckdb" &&
+    state.mode === "standard"
   );
 }
 
@@ -248,6 +281,22 @@ function handleDifficulty(event) {
   });
 }
 
+function handleMode(event) {
+  const button = event.target.closest("[data-mode]");
+  if (!button) return;
+  state.mode = button.dataset.mode;
+  elements.modeChoices.querySelectorAll("button").forEach((choice) => {
+    choice.classList.toggle("selected", choice === button);
+  });
+  const advanced = state.mode === "advanced";
+  elements.roleTrackField.hidden = !advanced;
+  elements.reuseDatasetPreference.hidden = !advanced;
+  elements.modeHelp.textContent = advanced
+    ? "A SQL build, SQL debugging task, and analytical case with staged interviewer details and a self-review rubric."
+    : "Three deterministic SQL questions with exact requirements available inline.";
+  updateDemoAvailability();
+}
+
 async function generateExercise(demo) {
   const companyName = resolvedCompanyName();
   if (!companyName) {
@@ -262,25 +311,182 @@ async function generateExercise(demo) {
     provider: elements.providerSelect.value,
     demo,
     save_history: elements.saveHistoryInput.checked,
+    mode: state.mode,
+    role_track: state.mode === "advanced" ? state.roleTrack : null,
+    reuse_cached_dataset: elements.reuseDatasetInput.checked,
   };
+  clearGenerationStatus();
   showLoading(demo);
   try {
+    if (!demo && state.mode === "advanced") {
+      const started = await fetchJson("/api/generations", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      state.generationId = started.generation_id;
+      state.generationPending = true;
+      state.generationStartedAt = Date.now();
+      generationPollCancelled = false;
+      await pollGeneration(started.generation_id);
+      return;
+    }
     const response = await fetchJson("/api/exercises", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     enterLab(response);
   } catch (error) {
-    showToast(error.message, true);
+    state.generationPending = false;
+    if (state.questionSet?.generation_status === "running") {
+      elements.generationProgress.hidden = false;
+      elements.generationProgress.classList.add("failed");
+      elements.generationProgressTitle.textContent = "Generation status was interrupted";
+      elements.generationProgressMessage.textContent = error.message;
+      updateGenerationControls();
+    }
+    showGenerationFailure(error.message);
+    showToast(error.message, true, 12000);
   } finally {
-    hideLoading();
+    if (!state.generationPending) hideLoading();
   }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function pollGeneration(generationId) {
+  let openedFirstQuestion = false;
+  let consecutivePollFailures = 0;
+  while (!generationPollCancelled) {
+    let progress;
+    try {
+      progress = await fetchJson(`/api/generations/${generationId}`);
+      consecutivePollFailures = 0;
+    } catch (error) {
+      consecutivePollFailures += 1;
+      if (consecutivePollFailures >= 4) throw error;
+      elements.loadingMessage.textContent = "Reconnecting to the local generation log…";
+      await wait(1200);
+      continue;
+    }
+    renderGenerationLog(progress);
+    if (progress.partial_result && !openedFirstQuestion) {
+      enterLab(progress.partial_result);
+      openedFirstQuestion = true;
+      hideLoading();
+      renderInLabGenerationProgress(progress);
+      showToast("Question 1 is ready. Questions 2 and 3 are continuing in the background.");
+    } else if (openedFirstQuestion && progress.status === "running") {
+      renderInLabGenerationProgress(progress);
+    }
+    if (progress.status === "complete") {
+      state.generationPending = false;
+      if (openedFirstQuestion) mergeProgressiveResult(progress.result);
+      else enterLab(progress.result);
+      elements.generationProgress.hidden = true;
+      hideLoading();
+      const tokenText = progress.telemetry.total_tokens == null
+        ? "Token usage was not reported by the CLI."
+        : `${progress.telemetry.total_tokens.toLocaleString()} tokens reported.`;
+      showToast(`All 3 questions are ready. ${tokenText}`);
+      return;
+    }
+    if (progress.status === "failed") {
+      state.generationPending = false;
+      hideLoading();
+      if (openedFirstQuestion) {
+        elements.generationProgressTitle.textContent = "Questions 2 and 3 could not finish";
+        elements.generationProgressMessage.textContent = progress.error;
+        elements.generationProgress.classList.add("failed");
+        updateGenerationControls();
+      } else {
+        showGenerationFailure(progress.error || "Generation failed.");
+      }
+      throw new Error(progress.error || "Generation failed.");
+    }
+    await wait(900);
+  }
+}
+
+function mergeProgressiveResult(result) {
+  const current = state.questions[0];
+  current.sql = elements.sqlEditor.value;
+  state.questionSet = result;
+  state.historyId = result.history_id;
+  state.questions = result.questions.map((question, index) => index === 0
+    ? { ...question, ...current, session_id: question.session_id }
+    : {
+        ...question,
+        sql: question.latest_sql || "",
+        passed: question.passed ?? null,
+        detailsExpanded: false,
+        clarifications: question.clarifications || [],
+      });
+  elements.challengePosition.textContent = `QUESTION 1 OF ${state.questions.length}`;
+  renderQuestionNavigator();
+  updateGenerationControls();
+}
+
+function renderGenerationLog(progress) {
+  const latest = progress.events.at(-1);
+  elements.loadingElapsed.textContent = `${Math.floor(progress.elapsed_seconds)}s elapsed`;
+  if (latest) elements.loadingMessage.textContent = latest.message;
+  elements.loadingEvents.replaceChildren();
+  progress.events.slice(-5).forEach((event) => {
+    const item = document.createElement("li");
+    const elapsed = document.createElement("span");
+    elapsed.textContent = `${Math.floor(event.elapsed_seconds)}s`;
+    const message = document.createElement("span");
+    message.textContent = event.message;
+    item.append(elapsed, message);
+    elements.loadingEvents.append(item);
+  });
+  elements.loadingProviderMeta.textContent = generationTelemetryText(progress.telemetry);
+}
+
+function generationTelemetryText(telemetry = {}) {
+  const identity = [telemetry.provider, telemetry.model].filter(Boolean).join(" · ");
+  const tokens = telemetry.total_tokens == null
+    ? "tokens pending"
+    : `${telemetry.total_tokens.toLocaleString()} tokens`;
+  return `${identity || "CLI details pending"} · ${tokens}`;
+}
+
+function renderInLabGenerationProgress(progress) {
+  elements.generationProgress.hidden = false;
+  elements.generationProgress.classList.remove("failed");
+  elements.generationProgressTitle.textContent = "Question 1 ready · building Questions 2 and 3";
+  elements.generationProgressMessage.textContent = progress.events.at(-1)?.message || "Generation continues.";
+  elements.generationProgressMeta.textContent = `${Math.floor(progress.elapsed_seconds)}s · ${generationTelemetryText(progress.telemetry)}`;
+}
+
+function showGenerationFailure(message) {
+  elements.generationStatusMessage.textContent = message;
+  elements.generationStatus.hidden = false;
+}
+
+function clearGenerationStatus() {
+  elements.generationStatus.hidden = true;
+  elements.generationStatusMessage.textContent = "";
 }
 
 function showLoading(demo) {
   elements.loadingOverlay.hidden = false;
+  state.generationStartedAt = Date.now();
+  elements.loadingEvents.replaceChildren();
+  elements.loadingElapsed.textContent = "0s elapsed";
+  elements.loadingProviderMeta.textContent = "Waiting for provider details";
   const messages = demo
     ? ["Loading the validated sample exercise…", "Seeding the visible DuckDB tables…"]
+    : state.mode === "advanced"
+    ? [
+        "Calibrating questions to the selected role track.",
+        "Building SQL construction, debugging, and analytical case tasks.",
+        "Writing staged interviewer clarifications and deterministic requirements.",
+        "Creating a self-review case rubric without automated case scoring.",
+        `Validating all SQL deliverables with ${selectedDialect()?.execution_label || "DuckDB"}.`,
+      ]
     : [
         "Creating one company-style schema and shared dataset.",
         "Generating visible data and hidden edge cases.",
@@ -291,12 +497,20 @@ function showLoading(demo) {
   let index = 0;
   elements.loadingTitle.textContent = demo
     ? "Opening the instant practice lab…"
+    : state.mode === "advanced"
+    ? "Generating an advanced interview set…"
     : "Generating three realistic questions…";
   elements.loadingMessage.textContent = messages[0];
   loadingTimer = window.setInterval(() => {
-    index = (index + 1) % messages.length;
-    elements.loadingMessage.textContent = messages[index];
-  }, 4200);
+    const elapsed = state.generationStartedAt
+      ? Math.floor((Date.now() - state.generationStartedAt) / 1000)
+      : 0;
+    elements.loadingElapsed.textContent = `${elapsed}s elapsed`;
+    if (state.mode !== "advanced") {
+      index = (index + 1) % messages.length;
+      elements.loadingMessage.textContent = messages[index];
+    }
+  }, 1000);
 }
 
 function hideLoading() {
@@ -305,6 +519,14 @@ function hideLoading() {
 }
 
 function enterLab(response) {
+  state.mode = response.mode || "standard";
+  if (response.role_track) state.roleTrack = response.role_track;
+  elements.modeChoices.querySelectorAll("button").forEach((choice) => {
+    choice.classList.toggle("selected", choice.dataset.mode === state.mode);
+  });
+  elements.roleTrackField.hidden = state.mode !== "advanced";
+  elements.roleTrackSelect.value = state.roleTrack;
+  handleRoleTrack();
   state.questionSet = response;
   state.historyId = response.history_id;
   state.questions = response.questions.map((question) => ({
@@ -312,6 +534,7 @@ function enterLab(response) {
     sql: question.latest_sql || "",
     passed: question.passed ?? null,
     detailsExpanded: false,
+    clarifications: question.clarifications || [],
   }));
   state.activeQuestionIndex = 0;
   elements.setupView.hidden = true;
@@ -330,6 +553,7 @@ function enterLab(response) {
 }
 
 function activateQuestion(index) {
+  closeSolutionModal();
   if (state.exercise && state.questions[state.activeQuestionIndex]) {
     state.questions[state.activeQuestionIndex].sql = elements.sqlEditor.value;
   }
@@ -347,7 +571,17 @@ function activateQuestion(index) {
   elements.companyBadge.textContent = exercise.company;
   elements.challengePosition.textContent = `QUESTION ${index + 1} OF ${state.questions.length}`;
   elements.challengeTitle.textContent = exercise.task_summary;
-  renderRequirements(exercise.requirements, question.detailsExpanded);
+  const advanced = state.questionSet.mode === "advanced";
+  elements.questionTypeBadge.hidden = !advanced;
+  elements.questionTypeBadge.textContent = formatQuestionType(exercise.question_type);
+  renderRequirements(
+    exercise.requirements,
+    question.detailsExpanded,
+    question.clarifications || [],
+  );
+  elements.requirementsToggleButton.textContent = advanced && !question.details_revealed
+    ? "Ask interviewer"
+    : question.detailsExpanded ? "Show Less" : "See More";
   elements.hintArea.replaceChildren();
   const remainingHints = Math.max(0, exercise.hint_count - (exercise.hints_revealed || 0));
   elements.hintButton.disabled = remainingHints === 0;
@@ -357,9 +591,11 @@ function activateQuestion(index) {
   elements.solutionButton.textContent = exercise.solution_revealed
     ? "View solution again"
     : "View solution";
+  updateGenerationControls();
 
   const firstTable = state.questionSet.tables[0]?.name || "table_name";
-  state.starterSql = `-- Write your ${state.questionSet.dialect_name} query here\nSELECT\n  *\nFROM ${firstTable}\nLIMIT 10;`;
+  state.starterSql = exercise.starter_sql ||
+    `-- Write your ${state.questionSet.dialect_name} query here\nSELECT\n  *\nFROM ${firstTable}\nLIMIT 10;`;
   elements.sqlEditor.value = question.sql || state.starterSql;
   updateEditorLines();
   resetResults();
@@ -368,18 +604,69 @@ function activateQuestion(index) {
   elements.sqlEditor.focus();
 }
 
-function toggleRequirements() {
+function updateGenerationControls() {
+  const incomplete = state.questionSet?.generation_status === "running";
+  elements.submitButton.disabled = incomplete;
+  elements.doctorButton.disabled = incomplete;
+  elements.solutionButton.disabled = incomplete;
+  const remainingHints = Math.max(
+    0,
+    (state.exercise?.hint_count || 0) - (state.exercise?.hints_revealed || 0),
+  );
+  elements.hintButton.disabled = incomplete || remainingHints === 0;
+  const reason = incomplete
+    ? "Available after all three questions finish and the saved session is attached."
+    : "";
+  for (const button of [
+    elements.submitButton,
+    elements.doctorButton,
+    elements.solutionButton,
+    elements.hintButton,
+  ]) {
+    button.title = reason;
+  }
+}
+
+async function toggleRequirements() {
   const question = state.questions[state.activeQuestionIndex];
+  if (state.questionSet.mode === "advanced" && !question.details_revealed) {
+    try {
+      const details = await fetchJson(
+        `/api/sessions/${question.session_id}/interviewer-details`,
+        { method: "POST" },
+      );
+      question.requirements = details.requirements;
+      question.clarifications = details.clarifications;
+      question.details_revealed = true;
+      question.detailsExpanded = true;
+      renderRequirements(question.requirements, true, question.clarifications);
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
+  }
   question.detailsExpanded = !question.detailsExpanded;
   updateRequirementsDisclosure(question.detailsExpanded);
 }
 
-function renderRequirements(requirements, expanded) {
+function renderRequirements(requirements, expanded, clarifications = []) {
   elements.requirementsList.replaceChildren();
   requirements.forEach((requirement) => {
     const item = document.createElement("li");
     item.textContent = requirement;
     elements.requirementsList.append(item);
+  });
+  elements.clarificationsList.replaceChildren();
+  elements.clarificationsSection.hidden = clarifications.length === 0;
+  clarifications.forEach((clarification) => {
+    const item = document.createElement("div");
+    item.className = "clarification-item";
+    const question = document.createElement("strong");
+    question.textContent = clarification.candidate_question;
+    const answer = document.createElement("p");
+    answer.textContent = clarification.interviewer_answer;
+    item.append(question, answer);
+    elements.clarificationsList.append(item);
   });
   updateRequirementsDisclosure(expanded);
 }
@@ -388,6 +675,14 @@ function updateRequirementsDisclosure(expanded) {
   elements.requirementsPanel.hidden = !expanded;
   elements.requirementsToggleButton.textContent = expanded ? "Show Less" : "See More";
   elements.requirementsToggleButton.setAttribute("aria-expanded", String(expanded));
+}
+
+function formatQuestionType(value) {
+  return {
+    sql_build: "SQL build",
+    sql_debug: "SQL debugging",
+    analytical_case: "Analytical case",
+  }[value] || value;
 }
 
 function renderQuestionNavigator() {
@@ -773,39 +1068,136 @@ async function revealHint() {
 }
 
 function openSolutionModal() {
+  const question = state.questions[state.activeQuestionIndex];
   elements.solutionModal.hidden = false;
-  elements.confirmSolutionButton?.focus();
+  if (question.solution) {
+    renderSolution(question.solution);
+    elements.closeSolutionButton.focus();
+    return;
+  }
+  if (question.solution_revealed) {
+    renderSolutionLoading();
+    void revealSolution();
+    return;
+  }
+  renderSolutionConfirmation();
 }
 
 function closeSolutionModal() {
   elements.solutionModal.hidden = true;
 }
 
-async function revealSolution() {
-  setButtonBusy(elements.confirmSolutionButton, true, "Loading…");
+function renderSolutionConfirmation() {
+  elements.solutionModalBody.replaceChildren();
+  const icon = document.createElement("div");
+  icon.className = "modal-icon";
+  icon.textContent = "⌁";
+  const title = document.createElement("h2");
+  title.id = "solutionHeading";
+  title.textContent = "Reveal the reference solution?";
+  const description = document.createElement("p");
+  description.textContent =
+    "This will show the validated reference SQL. Try submitting your own answer first if you want the full interview experience.";
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.className = "button secondary";
+  cancelButton.type = "button";
+  cancelButton.textContent = "Keep working";
+  cancelButton.addEventListener("click", closeSolutionModal);
+  const confirmButton = document.createElement("button");
+  confirmButton.className = "button danger-fill";
+  confirmButton.type = "button";
+  confirmButton.textContent = "Reveal solution";
+  confirmButton.addEventListener("click", () => revealSolution(confirmButton));
+  actions.append(cancelButton, confirmButton);
+  elements.solutionModalBody.append(icon, title, description, actions);
+  confirmButton.focus();
+}
+
+function renderSolutionLoading() {
+  elements.solutionModalBody.replaceChildren();
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "REFERENCE SOLUTION";
+  const title = document.createElement("h2");
+  title.id = "solutionHeading";
+  title.textContent = "Loading validated approach…";
+  elements.solutionModalBody.append(eyebrow, title);
+}
+
+function renderSolution(solution) {
+  elements.solutionModalBody.replaceChildren();
+  const eyebrow = document.createElement("div");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "REFERENCE SOLUTION";
+  const title = document.createElement("h2");
+  title.id = "solutionHeading";
+  title.textContent = "One validated approach";
+  const codeWrap = document.createElement("div");
+  codeWrap.className = "solution-code-wrap";
+  const code = document.createElement("pre");
+  code.className = "solution-code";
+  code.textContent = solution.reference_sql;
+  codeWrap.append(code);
+  const explanation = document.createElement("p");
+  explanation.textContent = solution.explanation;
+  elements.solutionModalBody.append(eyebrow, title, codeWrap, explanation);
+  if (solution.case_rubric?.length) {
+    const rubricTitle = document.createElement("h3");
+    rubricTitle.textContent = "Self-review rubric";
+    const rubricNote = document.createElement("p");
+    rubricNote.textContent =
+      "Use this to review your reasoning. It does not change the deterministic SQL result.";
+    const rubricList = document.createElement("div");
+    rubricList.className = "case-rubric";
+    solution.case_rubric.forEach((criterion) => {
+      const item = document.createElement("article");
+      const heading = document.createElement("strong");
+      heading.textContent = criterion.criterion;
+      const signal = document.createElement("p");
+      signal.textContent = `Strong signal: ${criterion.strong_signal}`;
+      const miss = document.createElement("p");
+      miss.textContent = `Common miss: ${criterion.common_miss}`;
+      item.append(heading, signal, miss);
+      rubricList.append(item);
+    });
+    elements.solutionModalBody.append(rubricTitle, rubricNote, rubricList);
+  }
+  if (solution.reference_discussion?.length) {
+    const discussionTitle = document.createElement("h3");
+    discussionTitle.textContent = "Strong discussion points";
+    const discussion = document.createElement("ul");
+    solution.reference_discussion.forEach((point) => {
+      const item = document.createElement("li");
+      item.textContent = point;
+      discussion.append(item);
+    });
+    elements.solutionModalBody.append(discussionTitle, discussion);
+  }
+}
+
+async function revealSolution(confirmButton = null) {
+  const questionIndex = state.activeQuestionIndex;
+  const question = state.questions[questionIndex];
+  if (confirmButton) setButtonBusy(confirmButton, true, "Loading…");
   try {
-    const solution = await fetchJson(`/api/sessions/${state.sessionId}/solution`, { method: "POST" });
-    state.questions[state.activeQuestionIndex].solution_revealed = true;
-    elements.solutionButton.textContent = "View solution again";
-    elements.solutionModalBody.replaceChildren();
-    const eyebrow = document.createElement("div");
-    eyebrow.className = "eyebrow";
-    eyebrow.textContent = "REFERENCE SOLUTION";
-    const title = document.createElement("h2");
-    title.textContent = "One validated approach";
-    const codeWrap = document.createElement("div");
-    codeWrap.className = "solution-code-wrap";
-    const code = document.createElement("pre");
-    code.className = "solution-code";
-    code.textContent = solution.reference_sql;
-    codeWrap.append(code);
-    const explanation = document.createElement("p");
-    explanation.textContent = solution.explanation;
-    elements.solutionModalBody.append(eyebrow, title, codeWrap, explanation);
+    const solution = await fetchJson(`/api/sessions/${question.session_id}/solution`, {
+      method: "POST",
+    });
+    question.solution_revealed = true;
+    question.solution = solution;
+    if (state.activeQuestionIndex === questionIndex) {
+      elements.solutionButton.textContent = "View solution again";
+      renderSolution(solution);
+    }
   } catch (error) {
     showToast(error.message, true);
+    if (state.activeQuestionIndex === questionIndex) renderSolutionConfirmation();
   } finally {
-    setButtonBusy(elements.confirmSolutionButton, false, "Reveal solution");
+    if (confirmButton?.isConnected) {
+      setButtonBusy(confirmButton, false, "Reveal solution");
+    }
   }
 }
 
@@ -858,6 +1250,10 @@ function startNewQuestion() {
   state.questions = [];
   state.activeQuestionIndex = 0;
   state.historyId = null;
+  state.generationPending = false;
+  state.generationId = null;
+  generationPollCancelled = true;
+  elements.generationProgress.hidden = true;
   elements.labView.hidden = true;
   elements.setupView.hidden = false;
   elements.configStep.hidden = true;
@@ -883,10 +1279,13 @@ function closeHistory() {
 function renderHistory(history) {
   elements.historyList.replaceChildren();
   elements.historyStorage.textContent = `${history.sessions.length} saved session${history.sessions.length === 1 ? "" : "s"} · ${formatBytes(history.storage_bytes)} on disk`;
-  elements.clearHistoryButton.disabled = history.sessions.length === 0 || Boolean(state.historyId);
-  elements.clearHistoryButton.title = state.historyId
-    ? "Start a new session before clearing all history."
-    : "Delete every saved session.";
+  elements.clearHistoryButton.disabled = history.sessions.length === 0 ||
+    Boolean(state.historyId) || state.generationPending;
+  elements.clearHistoryButton.title = state.generationPending
+    ? "Wait for question generation to finish."
+    : state.historyId
+      ? "Start a new session before clearing all history."
+      : "Delete every saved session, generation log, and cached dataset.";
 
   if (!history.sessions.length) {
     const empty = document.createElement("div");
@@ -1014,10 +1413,13 @@ function setButtonBusy(button, busy, label, prefix = "") {
   button.textContent = prefix ? `${prefix} ${label}` : label;
 }
 
-function showToast(message, error = false) {
+function showToast(message, error = false, duration = 4200) {
   window.clearTimeout(toastTimer);
   elements.toast.textContent = message;
   elements.toast.classList.toggle("error", error);
   elements.toast.classList.add("visible");
-  toastTimer = window.setTimeout(() => elements.toast.classList.remove("visible"), 4200);
+  toastTimer = window.setTimeout(
+    () => elements.toast.classList.remove("visible"),
+    duration,
+  );
 }

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sql_lab.models import ExerciseRequest, ExerciseSet
+from sql_lab.models import ExerciseRequest, ExerciseSet, SharedExerciseDataset
 
 
 @dataclass(frozen=True)
@@ -94,3 +94,22 @@ class HistoryRepository(ABC):
 
     @abstractmethod
     def storage_bytes(self) -> int: ...
+
+    def start_generation(self, generation_id: str, fields: dict[str, Any]) -> None:
+        """Persist non-sensitive generation metadata when supported."""
+
+    def record_generation_event(
+        self, generation_id: str, sequence: int, fields: dict[str, Any]
+    ) -> None:
+        """Append one user-visible stage event when supported."""
+
+    def finish_generation(self, generation_id: str, fields: dict[str, Any]) -> None:
+        """Record status and aggregated usage when supported."""
+
+    def get_cached_dataset(self, cache_key: str) -> SharedExerciseDataset | None:
+        return None
+
+    def put_cached_dataset(
+        self, cache_key: str, dataset: SharedExerciseDataset
+    ) -> None:
+        """Store a local shared dataset when supported."""

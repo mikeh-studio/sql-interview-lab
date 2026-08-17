@@ -25,6 +25,7 @@ class LabSession:
     history_question_id: str | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
     hint_index: int = 0
+    details_revealed: bool = False
     _engine: SQLEngine = field(init=False, repr=False)
     _lock: RLock = field(default_factory=RLock, repr=False)
 
@@ -72,6 +73,10 @@ class LabSession:
             self.hint_index += 1
             return hint, len(self.exercise.hints) - self.hint_index
 
+    def reveal_interviewer_details(self) -> None:
+        with self._lock:
+            self.details_revealed = True
+
     def reset(self) -> None:
         with self._lock:
             self._engine.setup(self.exercise)
@@ -112,6 +117,17 @@ class SessionStore:
         if session is None:
             raise SessionNotFoundError(session_id)
         return session
+
+    def attach_history(
+        self,
+        session_id: str,
+        practice_session_id: str,
+        history_question_id: str,
+    ) -> None:
+        session = self.get(session_id)
+        with session._lock:
+            session.practice_session_id = practice_session_id
+            session.history_question_id = history_question_id
 
     def close_all(self) -> None:
         with self._lock:

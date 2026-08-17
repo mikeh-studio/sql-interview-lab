@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterator
@@ -18,7 +18,7 @@ from sql_lab.history.base import (
     HistorySession,
     HistorySessionSummary,
 )
-from sql_lab.models import ExerciseRequest, ExerciseSet
+from sql_lab.models import ExerciseRequest, ExerciseSet, SharedExerciseDataset
 
 
 SCHEMA_VERSION = 1
@@ -45,6 +45,10 @@ def _json_default(value: object) -> object:
         return float(value)
     if isinstance(value, datetime):
         return _timestamp(value)
+    if isinstance(value, (date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return value.total_seconds()
     raise TypeError(f"{type(value).__name__} is not JSON serializable")
 
 
@@ -139,6 +143,55 @@ class SQLiteHistoryRepository(HistoryRepository):
                     ON practice_sessions(last_activity_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_submissions_session_question
                     ON submissions(practice_session_id, question_id, submitted_at);
+
+                CREATE TABLE IF NOT EXISTS generation_runs (
+                    id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    status TEXT NOT NULL,
+                    company TEXT NOT NULL,
+                    dialect TEXT NOT NULL,
+                    difficulty TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    role_track TEXT,
+                    provider TEXT NOT NULL,
+                    cli TEXT,
+                    cli_version TEXT,
+                    model TEXT,
+                    cache_key TEXT,
+                    cache_hit INTEGER NOT NULL DEFAULT 0,
+                    prompt_count INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER,
+                    cached_input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    reasoning_tokens INTEGER,
+                    total_tokens INTEGER,
+                    error_type TEXT,
+                    error TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS generation_events (
+                    generation_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    elapsed_seconds REAL NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    PRIMARY KEY (generation_id, sequence),
+                    FOREIGN KEY (generation_id) REFERENCES generation_runs(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS dataset_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    last_used_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_generation_started
+                    ON generation_runs(started_at DESC);
                 """
             )
             schema_row = connection.execute(
@@ -319,6 +372,8 @@ class SQLiteHistoryRepository(HistoryRepository):
             dialect=summary.dialect,
             difficulty=summary.difficulty,
             additional_context=stored_row["additional_context"],
+            mode=exercise_set.mode,
+            role_track=exercise_set.role_track,
         )
         questions = tuple(
             HistoryQuestionState(
@@ -452,6 +507,8 @@ class SQLiteHistoryRepository(HistoryRepository):
             ).fetchone()[0]
             connection.execute("DELETE FROM practice_sessions")
             connection.execute("DELETE FROM exercise_sets")
+            connection.execute("DELETE FROM generation_runs")
+            connection.execute("DELETE FROM dataset_cache")
         return int(count)
 
     def storage_bytes(self) -> int:
@@ -464,3 +521,132 @@ class SQLiteHistoryRepository(HistoryRepository):
             )
             if candidate.exists()
         )
+
+    def start_generation(self, generation_id: str, fields: dict[str, Any]) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO generation_runs(
+                    id, started_at, status, company, dialect, difficulty, mode,
+                    role_track, provider, cache_key
+                ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generation_id,
+                    _timestamp(_now()),
+                    fields["company"],
+                    fields["dialect"],
+                    fields["difficulty"],
+                    fields["mode"],
+                    fields.get("role_track"),
+                    fields["provider"],
+                    fields.get("cache_key"),
+                ),
+            )
+            stale = connection.execute(
+                "SELECT id FROM generation_runs ORDER BY started_at DESC LIMIT -1 OFFSET 500"
+            ).fetchall()
+            connection.executemany(
+                "DELETE FROM generation_runs WHERE id = ?",
+                [(row["id"],) for row in stale],
+            )
+
+    def record_generation_event(
+        self, generation_id: str, sequence: int, fields: dict[str, Any]
+    ) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO generation_events(
+                    generation_id, sequence, created_at, stage, message,
+                    elapsed_seconds, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    generation_id,
+                    sequence,
+                    _timestamp(_now()),
+                    fields["stage"],
+                    fields["message"],
+                    fields["elapsed_seconds"],
+                    json.dumps(fields.get("metadata", {}), separators=(",", ":")),
+                ),
+            )
+
+    def finish_generation(self, generation_id: str, fields: dict[str, Any]) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                UPDATE generation_runs
+                SET completed_at = ?, status = ?, cli = ?, cli_version = ?, model = ?,
+                    cache_hit = ?, prompt_count = ?, input_tokens = ?,
+                    cached_input_tokens = ?, output_tokens = ?, reasoning_tokens = ?,
+                    total_tokens = ?, error_type = ?, error = ?
+                WHERE id = ?
+                """,
+                (
+                    _timestamp(_now()),
+                    fields["status"],
+                    fields.get("cli"),
+                    fields.get("cli_version"),
+                    fields.get("model"),
+                    int(bool(fields.get("cache_hit"))),
+                    fields.get("prompt_count", 0),
+                    fields.get("input_tokens"),
+                    fields.get("cached_input_tokens"),
+                    fields.get("output_tokens"),
+                    fields.get("reasoning_tokens"),
+                    fields.get("total_tokens"),
+                    fields.get("error_type"),
+                    fields.get("error"),
+                    generation_id,
+                ),
+            )
+
+    def get_cached_dataset(self, cache_key: str) -> SharedExerciseDataset | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM dataset_cache WHERE cache_key = ?",
+                (cache_key,),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "UPDATE dataset_cache SET last_used_at = ? WHERE cache_key = ?",
+                (_timestamp(_now()), cache_key),
+            )
+        try:
+            return SharedExerciseDataset.model_validate_json(row["payload_json"])
+        except ValueError:
+            with self._connection() as connection:
+                connection.execute(
+                    "DELETE FROM dataset_cache WHERE cache_key = ?", (cache_key,)
+                )
+            return None
+
+    def put_cached_dataset(
+        self, cache_key: str, dataset: SharedExerciseDataset
+    ) -> None:
+        now = _timestamp(_now())
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO dataset_cache(cache_key, created_at, last_used_at, payload_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    last_used_at = excluded.last_used_at,
+                    payload_json = excluded.payload_json
+                """,
+                (cache_key, now, now, dataset.model_dump_json()),
+            )
+            stale = connection.execute(
+                """
+                SELECT cache_key FROM dataset_cache
+                ORDER BY last_used_at DESC
+                LIMIT -1 OFFSET 50
+                """
+            ).fetchall()
+            connection.executemany(
+                "DELETE FROM dataset_cache WHERE cache_key = ?",
+                [(row["cache_key"],) for row in stale],
+            )
