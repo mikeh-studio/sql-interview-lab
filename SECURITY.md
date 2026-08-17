@@ -1,6 +1,6 @@
 # Security and privacy
 
-SQL Interview Lab is a local development tool. It has no authentication layer and allows
+Data Interview Lab is a local development tool. It has no authentication layer and allows
 the person using the interface to execute SQL through DuckDB.
 
 ## Keep the server local
@@ -8,7 +8,7 @@ the person using the interface to execute SQL through DuckDB.
 Run the browser interface on its default loopback address:
 
 ```bash
-sql-lab --web
+data-interview-lab --web
 ```
 
 Do not bind the application to `0.0.0.0`, a public interface, or an untrusted network.
@@ -21,7 +21,7 @@ Generated exercises, additional context, submitted SQL, grading summaries, hints
 solution-reveal activity can be stored in the local history database. The default path is:
 
 ```text
-~/.sql-interview-lab/history.db
+~/.data-interview-lab/history.db
 ```
 
 History databases, environment files, virtual environments, caches, and common credential
@@ -34,6 +34,7 @@ or generated exercise files.
 
 ## Reporting an issue
 
-While the repository is private, report security or privacy concerns directly to the
-repository owner. Do not include credentials, personal practice data, or other sensitive
-material in an issue.
+Report security or privacy concerns through GitHub's private vulnerability-reporting flow
+when it is available, or contact the repository owner directly. Do not open a public issue
+that includes credentials, personal practice data, exploit details, or other sensitive
+material.

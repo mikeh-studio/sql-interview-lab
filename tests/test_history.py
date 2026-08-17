@@ -4,9 +4,9 @@ import json
 import sqlite3
 from datetime import date
 
-from sql_lab.exercises import get_static_exercise_set
-from sql_lab.history import SQLiteHistoryRepository
-from sql_lab.models import Difficulty, ExerciseRequest
+from data_interview_lab.exercises import get_static_exercise_set
+from data_interview_lab.history import SQLiteHistoryRepository
+from data_interview_lab.models import Difficulty, ExerciseRequest
 
 
 def request() -> ExerciseRequest:
@@ -194,7 +194,7 @@ def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
     dataset_payload = get_static_exercise_set().model_dump(mode="json")
     dataset_payload.update({"mode": "advanced", "role_track": "data_science"})
     dataset_payload.pop("questions")
-    from sql_lab.models import SharedExerciseDataset
+    from data_interview_lab.models import SharedExerciseDataset
 
     dataset = SharedExerciseDataset.model_validate(dataset_payload)
     fields = {
@@ -205,6 +205,9 @@ def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
         "role_track": "data_science",
         "provider": "codex",
         "cache_key": "cache-1",
+        "requested_model": "gpt-requested",
+        "requested_reasoning_effort": "high",
+        "configuration_source": "interview_override",
     }
 
     repository.start_generation("generation-1", fields)
@@ -224,6 +227,8 @@ def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
             "status": "complete",
             "cli": "codex",
             "model": "gpt-5.6-sol",
+            "reasoning_effort": "high",
+            "configuration_source": "interview_override",
             "prompt_count": 3,
             "input_tokens": 300,
             "output_tokens": 90,
@@ -235,12 +240,22 @@ def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
     assert repository.get_cached_dataset("cache-1") == dataset
     with sqlite3.connect(repository.path) as connection:
         run = connection.execute(
-            "SELECT model, prompt_count, total_tokens FROM generation_runs"
+            """SELECT requested_model, requested_reasoning_effort, model,
+                      reasoning_effort, configuration_source, prompt_count, total_tokens
+               FROM generation_runs"""
         ).fetchone()
         event = connection.execute(
             "SELECT stage, message FROM generation_events"
         ).fetchone()
-    assert run == ("gpt-5.6-sol", 3, 390)
+    assert run == (
+        "gpt-requested",
+        "high",
+        "gpt-5.6-sol",
+        "high",
+        "interview_override",
+        3,
+        390,
+    )
     assert event == ("dataset", "Generating compact data.")
 
 
@@ -250,7 +265,7 @@ def test_dataset_cache_retains_only_fifty_recent_entries(tmp_path) -> None:
     payload = get_static_exercise_set().model_dump(mode="json")
     payload.update({"mode": "advanced", "role_track": "data_science"})
     payload.pop("questions")
-    from sql_lab.models import SharedExerciseDataset
+    from data_interview_lab.models import SharedExerciseDataset
 
     dataset = SharedExerciseDataset.model_validate(payload)
     for index in range(51):

@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "sql-interview-lab"
-version = "0.9.0"
-description = "A local SQL interview practice lab with real execution and deterministic grading."
+name = "data-interview-lab"
+version = "0.9.2"
+description = "Local data interview practice with executable SQL and deterministic grading."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -22,17 +22,19 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "httpx2>=2,<3",
+  "build>=1.2,<2",
+  "httpx>=0.28,<1",
   "pytest>=8.3,<10",
   "pytest-cov>=5,<8",
   "ruff>=0.16.3,<0.17",
 ]
 
 [project.scripts]
-sql-lab = "sql_lab.cli:app"
+data-interview-lab = "data_interview_lab.cli:app"
+sql-lab = "data_interview_lab.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sql_lab"]
+packages = ["src/data_interview_lab"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"

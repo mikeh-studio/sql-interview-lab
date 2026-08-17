@@ -7,18 +7,29 @@ from typing import Any
 
 import pytest
 
-from sql_lab.config import Settings
-from sql_lab.exercises import get_static_exercise
-from sql_lab.exercises.static import STATIC_EXERCISE_SET
-from sql_lab.generation.generator import ExerciseGenerationError, ExerciseGenerator
-from sql_lab.generation.schema import make_strict_output_schema
-from sql_lab.llm.base import LLMExecutableNotFoundError, LLMProvider, LLMProviderError
-from sql_lab.llm.codex_cli import _codex_metadata
-from sql_lab.llm.claude_cli import _parse_claude_envelope
-from sql_lab.llm.command import CommandLLMProvider
-from sql_lab.models import Dialect, Difficulty, ExerciseRequest
-from sql_lab.models import ExerciseSet, QuestionType, RoleTrack, SessionMode
-from sql_lab.services import generate_exercise_set, validate_exercise_runtime
+from data_interview_lab.config import Settings
+from data_interview_lab.exercises import get_static_exercise
+from data_interview_lab.exercises.static import STATIC_EXERCISE_SET
+from data_interview_lab.generation.generator import (
+    ExerciseGenerationError,
+    ExerciseGenerator,
+)
+from data_interview_lab.generation.schema import make_strict_output_schema
+from data_interview_lab.llm.base import (
+    LLMExecutableNotFoundError,
+    LLMProvider,
+    LLMProviderError,
+)
+from data_interview_lab.llm.codex_cli import (
+    _codex_metadata,
+    codex_command_with_overrides,
+    resolve_codex_configuration,
+)
+from data_interview_lab.llm.claude_cli import _parse_claude_envelope
+from data_interview_lab.llm.command import CommandLLMProvider
+from data_interview_lab.models import Dialect, Difficulty, ExerciseRequest
+from data_interview_lab.models import ExerciseSet, QuestionType, RoleTrack, SessionMode
+from data_interview_lab.services import generate_exercise_set, validate_exercise_runtime
 
 
 class FakeProvider(LLMProvider):
@@ -254,7 +265,9 @@ def test_advanced_generation_uses_separate_timeout(monkeypatch) -> None:
         captured_timeout = settings.llm_timeout_seconds
         return FakeProvider(json.dumps(advanced_payload()))
 
-    monkeypatch.setattr("sql_lab.services.create_provider", fake_create_provider)
+    monkeypatch.setattr(
+        "data_interview_lab.services.create_provider", fake_create_provider
+    )
     settings = Settings(
         llm_provider="codex",
         llm_timeout_seconds=600,
@@ -308,7 +321,7 @@ def test_cli_subprocess_failure_includes_exit_status() -> None:
 
 
 def test_missing_cli_executable_fails_clearly() -> None:
-    provider = CommandLLMProvider(("sql-lab-command-that-does-not-exist",))
+    provider = CommandLLMProvider(("data-interview-lab-command-that-does-not-exist",))
 
     with pytest.raises(LLMExecutableNotFoundError, match="not found"):
         provider.generate("prompt")
@@ -341,6 +354,53 @@ def test_codex_json_events_capture_model_and_token_usage() -> None:
     assert usage.output_tokens == 30
     assert usage.reasoning_tokens == 12
     assert usage.total_tokens == 150
+
+
+def test_codex_request_overrides_are_separate_cli_arguments() -> None:
+    command = codex_command_with_overrides(
+        ("codex", "exec", "--ephemeral"),
+        model="gpt-future-7",
+        reasoning_effort="ultra_next",
+    )
+
+    assert command == (
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--model",
+        "gpt-future-7",
+        "-c",
+        "model_reasoning_effort=ultra_next",
+    )
+
+
+def test_codex_configuration_resolves_user_defaults_and_command_overrides(
+    tmp_path, monkeypatch
+) -> None:
+    (tmp_path / "config.toml").write_text(
+        'model = "gpt-configured"\nmodel_reasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    inherited = resolve_codex_configuration(("codex", "exec"))
+    overridden = resolve_codex_configuration(
+        (
+            "codex",
+            "exec",
+            "--model",
+            "gpt-future-7",
+            "-c",
+            "model_reasoning_effort=ultra_next",
+        )
+    )
+
+    assert inherited.model == "gpt-configured"
+    assert inherited.reasoning_effort == "high"
+    assert inherited.source == "user_config"
+    assert overridden.model == "gpt-future-7"
+    assert overridden.reasoning_effort == "ultra_next"
+    assert overridden.source == "command_override"
 
 
 def test_claude_json_result_captures_structured_output_model_and_usage() -> None:

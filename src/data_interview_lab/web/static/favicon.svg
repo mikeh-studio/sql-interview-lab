@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="15" fill="#111722"/>
+  <rect x="5" y="5" width="54" height="54" rx="12" fill="#173125" stroke="#27d17f"/>
+  <text x="32" y="38" fill="#27d17f" font-family="monospace" font-size="17" font-weight="800" text-anchor="middle">DIL</text>
+</svg>
