@@ -9,7 +9,7 @@
     />
     <title>SQL Interview Lab</title>
     <link rel="icon" href="/favicon.ico" />
-    <link rel="stylesheet" href="/assets/styles.css?v=0.8.0" />
+    <link rel="stylesheet" href="/assets/styles.css?v=0.9.0" />
   </head>
   <body>
     <div class="app-background" aria-hidden="true"></div>
@@ -104,6 +104,19 @@
         </div>
 
         <div class="config-card">
+          <fieldset class="choice-field">
+            <legend>Interview mode</legend>
+            <div class="mode-choice-row">
+              <div id="modeChoices" class="segmented-control mode-control">
+                <button type="button" data-mode="standard" class="selected">Standard</button>
+                <button type="button" data-mode="advanced">Advanced</button>
+              </div>
+              <small id="modeHelp">
+                Three deterministic SQL questions with exact requirements available inline.
+              </small>
+            </div>
+          </fieldset>
+
           <div class="field-grid">
             <label class="field-label">
               <span>SQL dialect</span>
@@ -117,6 +130,11 @@
                 <option value="claude">Claude CLI</option>
               </select>
               <small>Uses your locally installed and authenticated CLI.</small>
+            </label>
+            <label id="roleTrackField" class="field-label" hidden>
+              <span>Target role</span>
+              <select id="roleTrackSelect"></select>
+              <small id="roleTrackHelp">Advanced questions are calibrated to this role.</small>
             </label>
             <label class="field-label context-field">
               <span>Additional context <small>Optional</small></span>
@@ -147,6 +165,14 @@
             </span>
           </label>
 
+          <label id="reuseDatasetPreference" class="history-preference" hidden>
+            <input id="reuseDatasetInput" type="checkbox" checked />
+            <span>
+              <strong>Reuse a matching local dataset</strong>
+              <small>Advanced Mode can skip rebuilding the schema and rows when the setup matches.</small>
+            </span>
+          </label>
+
           <div class="generation-actions">
             <div>
               <strong>Ready to build your interview set?</strong>
@@ -161,6 +187,26 @@
                 <span aria-hidden="true">✦</span>
               </button>
             </div>
+          </div>
+          <div
+            id="generationStatus"
+            class="generation-status"
+            role="alert"
+            aria-live="assertive"
+            hidden
+          >
+            <div>
+              <strong>Question generation failed</strong>
+              <p id="generationStatusMessage"></p>
+            </div>
+            <button
+              id="dismissGenerationStatus"
+              class="generation-status-dismiss"
+              type="button"
+              aria-label="Dismiss generation error"
+            >
+              Dismiss
+            </button>
           </div>
         </div>
       </section>
@@ -190,6 +236,14 @@
         </div>
       </header>
 
+      <section id="generationProgress" class="generation-progress" hidden aria-live="polite">
+        <div>
+          <strong id="generationProgressTitle">Questions 2 and 3 are still generating</strong>
+          <p id="generationProgressMessage">Question 1 is ready to practice now.</p>
+        </div>
+        <div id="generationProgressMeta" class="generation-progress-meta"></div>
+      </section>
+
       <div class="workspace">
         <section class="challenge-pane" aria-label="Interview question">
           <div class="pane-tabs" role="tablist">
@@ -217,6 +271,7 @@
               <span id="difficultyBadge" class="badge difficulty"></span>
               <span id="companyBadge" class="badge"></span>
               <span id="dialectBadge" class="badge native">DuckDB</span>
+              <span id="questionTypeBadge" class="badge" hidden></span>
             </div>
             <div class="business-context">
               <span class="section-label">CONTEXT</span>
@@ -235,6 +290,10 @@
                 See More
               </button>
               <div id="requirementsPanel" class="requirements-panel" hidden>
+                <div id="clarificationsSection" hidden>
+                  <div class="section-label">INTERVIEWER CLARIFICATIONS</div>
+                  <div id="clarificationsList"></div>
+                </div>
                 <div class="section-label">REQUIREMENTS</div>
                 <ul id="requirementsList"></ul>
               </div>
@@ -350,7 +409,12 @@
         <h2 id="loadingTitle">Generating three realistic questions…</h2>
         <p id="loadingMessage">Creating one shared schema and dataset.</p>
         <div class="loading-track"><span></span></div>
-        <small>Generation may take several minutes. All three reference queries are validated next.</small>
+        <div class="generation-live-meta">
+          <span id="loadingElapsed">0s elapsed</span>
+          <span id="loadingProviderMeta">Waiting for provider details</span>
+        </div>
+        <ol id="loadingEvents" class="loading-events"></ol>
+        <small>Question 1 opens as soon as its reference query passes validation.</small>
       </div>
     </div>
 
@@ -359,22 +423,7 @@
         <button id="closeSolutionButton" class="modal-close" type="button" aria-label="Close">
           ×
         </button>
-        <div id="solutionModalBody">
-          <div class="modal-icon">⌁</div>
-          <h2 id="solutionHeading">Reveal the reference solution?</h2>
-          <p>
-            This will show the validated reference SQL. Try submitting your own answer first
-            if you want the full interview experience.
-          </p>
-          <div class="modal-actions">
-            <button id="cancelSolutionButton" class="button secondary" type="button">
-              Keep working
-            </button>
-            <button id="confirmSolutionButton" class="button danger-fill" type="button">
-              Reveal solution
-            </button>
-          </div>
-        </div>
+        <div id="solutionModalBody"></div>
       </div>
     </div>
 
@@ -407,6 +456,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/assets/app.js?v=0.8.0" defer></script>
+    <script src="/assets/app.js?v=0.9.0" defer></script>
   </body>
 </html>

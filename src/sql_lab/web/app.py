@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import hashlib
+import logging
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
@@ -28,12 +34,29 @@ from sql_lab.history import (
     SQLiteHistoryRepository,
 )
 from sql_lab.llm import LLMProviderError
-from sql_lab.models import Dialect, Difficulty, Exercise, ExerciseRequest, ExerciseSet
-from sql_lab.services import generate_exercise_set
+from sql_lab.models import (
+    Dialect,
+    Difficulty,
+    Exercise,
+    ExerciseQuestion,
+    ExerciseRequest,
+    ExerciseSet,
+    RoleTrack,
+    SessionMode,
+    SharedExerciseDataset,
+)
+from sql_lab.services import (
+    generate_advanced_progressively,
+    generate_exercise_set,
+    generate_exercise_set_with_telemetry,
+)
+from sql_lab.llm.base import LLMGeneration
+from sql_lab.web.generation_jobs import GenerationJob, GenerationJobStore
 from sql_lab.web.sessions import LabSession, SessionNotFoundError, SessionStore
 
 
 STATIC_DIR = Path(__file__).parent / "static"
+GENERATION_LOGGER = logging.getLogger("uvicorn.error.sql_lab.generation")
 
 COMPANIES = (
     {
@@ -96,6 +119,34 @@ DIALECT_NAMES = {
     Dialect.PRESTO: "Presto",
 }
 
+ROLE_TRACKS = (
+    {
+        "id": RoleTrack.PRODUCT_ANALYTICS.value,
+        "name": "Product Analytics",
+        "description": "Funnels, retention, experiments, metrics, and launch decisions.",
+    },
+    {
+        "id": RoleTrack.DATA_SCIENCE.value,
+        "name": "Data Science",
+        "description": "Metric design, causal reasoning, diagnosis, and recommendations.",
+    },
+    {
+        "id": RoleTrack.ANALYTICS_ENGINEERING.value,
+        "name": "Analytics Engineering",
+        "description": "Canonical models, data quality, reusable metrics, and trustworthy outputs.",
+    },
+    {
+        "id": RoleTrack.DATA_ENGINEERING.value,
+        "name": "Data Engineering",
+        "description": "Data modeling, pipelines, reliability, and query performance.",
+    },
+    {
+        "id": RoleTrack.AI_PRODUCT_SAFETY.value,
+        "name": "AI Product & Safety",
+        "description": "AI adoption or safety metrics, eval tradeoffs, and instrumentation.",
+    },
+)
+
 
 class APIModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -109,6 +160,9 @@ class CreateExercisePayload(APIModel):
     provider: Literal["codex", "claude"] = "codex"
     demo: bool = False
     save_history: bool = True
+    mode: SessionMode = SessionMode.STANDARD
+    role_track: RoleTrack | None = None
+    reuse_cached_dataset: bool = True
 
 
 class SQLPayload(APIModel):
@@ -164,13 +218,20 @@ def _public_question(
     session: LabSession, state: HistoryQuestionState
 ) -> dict[str, object]:
     exercise = session.exercise
+    advanced = exercise.mode is SessionMode.ADVANCED
+    details_revealed = not advanced or session.details_revealed
     return {
         "session_id": session.id,
         "id": exercise.id,
         "difficulty": exercise.difficulty.value,
         "question": exercise.question,
         "task_summary": _task_summary(exercise),
-        "requirements": _requirements(exercise),
+        "requirements": _requirements(exercise) if details_revealed else [],
+        "details_revealed": details_revealed,
+        "clarification_count": len(exercise.clarifications),
+        "question_type": exercise.question_type.value,
+        "starter_sql": exercise.starter_sql,
+        "modern_topics": [topic.value for topic in exercise.modern_topics],
         "hint_count": len(exercise.hints),
         "hints_revealed": state.hint_count,
         "solution_revealed": state.solution_revealed,
@@ -234,7 +295,7 @@ def _serialize_history_summary(summary: HistorySessionSummary) -> dict[str, obje
 
 
 def _exercise_response(
-    exercise_set: ExerciseSet,
+    exercise_set: ExerciseSet | SharedExerciseDataset,
     question_sessions: list[LabSession],
     states: tuple[HistoryQuestionState, ...],
     history_id: str | None,
@@ -243,6 +304,10 @@ def _exercise_response(
         "history_id": history_id,
         "provider": question_sessions[0].provider_name,
         "set_id": exercise_set.id,
+        "mode": exercise_set.mode.value,
+        "role_track": (
+            exercise_set.role_track.value if exercise_set.role_track else None
+        ),
         "company": exercise_set.company,
         "dialect": exercise_set.dialect.value,
         "dialect_name": DIALECT_NAMES[exercise_set.dialect],
@@ -261,6 +326,82 @@ def _exercise_response(
     }
 
 
+def _cache_key(request: ExerciseRequest) -> str:
+    identity = {
+        "company": request.company.casefold(),
+        "dialect": request.dialect.value,
+        "difficulty": request.difficulty.value,
+        "mode": request.mode.value,
+        "role_track": request.role_track.value if request.role_track else None,
+        "additional_context": request.additional_context.strip().casefold(),
+    }
+    return hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _telemetry_summary(calls: list[LLMGeneration]) -> dict[str, object]:
+    def total(field: str) -> int | None:
+        values = [getattr(call.usage, field) for call in calls]
+        present = [value for value in values if value is not None]
+        return sum(present) if present else None
+
+    models = list(dict.fromkeys(call.model for call in calls if call.model))
+    versions = list(
+        dict.fromkeys(call.cli_version for call in calls if call.cli_version)
+    )
+    clis = list(dict.fromkeys(call.cli for call in calls if call.cli))
+    return {
+        "provider": calls[0].provider if calls else None,
+        "cli": ", ".join(clis) or None,
+        "cli_version": ", ".join(versions) or None,
+        "model": ", ".join(models) or ("CLI default (not reported)" if calls else None),
+        "prompt_count": len(calls),
+        "input_tokens": total("input_tokens"),
+        "cached_input_tokens": total("cached_input_tokens"),
+        "output_tokens": total("output_tokens"),
+        "reasoning_tokens": total("reasoning_tokens"),
+        "total_tokens": total("total_tokens"),
+    }
+
+
+def _logged_error(exc: Exception) -> str:
+    """Keep persisted logs diagnostic without copying provider payload fragments."""
+
+    return str(exc).splitlines()[0][:500]
+
+
+def _default_case_review(exercise: Exercise) -> tuple[list[dict[str, str]], list[str]]:
+    rubric = [
+        {
+            "criterion": "Problem framing",
+            "strong_signal": "Connect the SQL output to the stakeholder decision and define the analysis population.",
+            "common_miss": "Jump directly into query mechanics without stating the decision or population.",
+        },
+        {
+            "criterion": "Metric and grain",
+            "strong_signal": "State the metric definition, denominator, time grain, and grouping dimensions explicitly.",
+            "common_miss": "Mix grains or leave the denominator ambiguous.",
+        },
+        {
+            "criterion": "Data quality and uncertainty",
+            "strong_signal": "Call out instrumentation gaps, duplicates, missing values, and limits on causal interpretation.",
+            "common_miss": "Treat observed data as complete and automatically causal.",
+        },
+        {
+            "criterion": "Recommendation",
+            "strong_signal": "Recommend an action with guardrails, tradeoffs, and a concrete follow-up measurement plan.",
+            "common_miss": "Report a metric without explaining what the team should do next.",
+        },
+    ]
+    discussion = [
+        f"Frame how the result supports the {exercise.role_track.value.replace('_', ' ') if exercise.role_track else 'analytics'} decision.",
+        "Validate the output grain and important imperfect-data cases before interpreting the metric.",
+        "Close with a recommendation, uncertainty, guardrails, and the next measurement step.",
+    ]
+    return rubric, discussion
+
+
 def create_app(
     exercise_factory: ExerciseFactory | None = None,
     history_repository: HistoryRepository | None = None,
@@ -269,6 +410,10 @@ def create_app(
     factory = exercise_factory or _default_exercise_factory
     reviewer = query_reviewer or _default_query_reviewer
     sessions = SessionStore()
+    generation_jobs = GenerationJobStore()
+    generation_executor = ThreadPoolExecutor(
+        max_workers=3, thread_name_prefix="sql-lab-generation"
+    )
     history = history_repository or SQLiteHistoryRepository(
         default_history_db_path(), max_sessions=history_limit_from_env()
     )
@@ -279,6 +424,7 @@ def create_app(
         try:
             yield
         finally:
+            generation_executor.shutdown(wait=False, cancel_futures=True)
             sessions.close_all()
             history.close()
 
@@ -291,6 +437,7 @@ def create_app(
     )
     application.state.sessions = sessions
     application.state.history = history
+    application.state.generation_jobs = generation_jobs
 
     @application.middleware("http")
     async def disable_local_asset_cache(request: Request, call_next):
@@ -306,6 +453,146 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="Lab session not found"
             ) from exc
+
+    def append_generation_event(
+        job: GenerationJob,
+        stage: str,
+        message: str,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        event = job.add_event(stage, message, metadata)
+        try:
+            history.record_generation_event(job.id, int(event["sequence"]), event)
+        except Exception:
+            GENERATION_LOGGER.exception(
+                "generation_event_persistence_failed generation_id=%s", job.id
+            )
+
+    def finish_generation_log(generation_id: str, fields: dict[str, object]) -> None:
+        try:
+            history.finish_generation(generation_id, fields)
+        except Exception:
+            GENERATION_LOGGER.exception(
+                "generation_log_persistence_failed generation_id=%s", generation_id
+            )
+
+    def run_progressive_generation(
+        job: GenerationJob,
+        request: ExerciseRequest,
+        payload: CreateExercisePayload,
+        cache_key: str,
+    ) -> None:
+        first_session: LabSession | None = None
+        cache_hit = False
+        try:
+            cached_dataset = (
+                history.get_cached_dataset(cache_key)
+                if payload.reuse_cached_dataset
+                else None
+            )
+            cache_hit = cached_dataset is not None
+
+            def on_event(stage: str, message: str, metadata: dict[str, object]) -> None:
+                append_generation_event(job, stage, message, metadata)
+
+            def on_first_question(
+                dataset: SharedExerciseDataset,
+                question: ExerciseQuestion,
+                call: LLMGeneration,
+            ) -> None:
+                nonlocal first_session
+                if payload.reuse_cached_dataset and not cache_hit:
+                    history.put_cached_dataset(cache_key, dataset)
+                exercise = dataset.exercise(question)
+                first_session = sessions.create(
+                    exercise, provider_name=payload.provider
+                )
+                state = HistoryQuestionState(question.id, 0)
+                partial = _exercise_response(dataset, [first_session], (state,), None)
+                partial.update(
+                    {
+                        "generation_id": job.id,
+                        "generation_status": "running",
+                        "question_count_target": 3,
+                    }
+                )
+                with job._lock:
+                    job.partial_result = partial
+                    job.telemetry = _telemetry_summary([call])
+
+            exercise_set, calls = generate_advanced_progressively(
+                request,
+                payload.provider,
+                cached_dataset=cached_dataset,
+                on_event=on_event,
+                on_first_question=on_first_question,
+            )
+            stored = (
+                history.create_session(exercise_set, request, payload.provider)
+                if payload.save_history
+                else None
+            )
+            states = (
+                stored.questions
+                if stored
+                else tuple(
+                    HistoryQuestionState(question.id, index)
+                    for index, question in enumerate(exercise_set.questions)
+                )
+            )
+            assert first_session is not None
+            if stored:
+                sessions.attach_history(
+                    first_session.id, stored.summary.id, states[0].question_id
+                )
+            remaining_sessions = [
+                sessions.create(
+                    exercise,
+                    provider_name=payload.provider,
+                    practice_session_id=stored.summary.id if stored else None,
+                    history_question_id=state.question_id,
+                    hint_index=state.hint_count,
+                )
+                for exercise, state in zip(exercise_set.exercises()[1:], states[1:])
+            ]
+            response = _exercise_response(
+                exercise_set,
+                [first_session, *remaining_sessions],
+                states,
+                stored.summary.id if stored else None,
+            )
+            response.update(
+                {
+                    "generation_id": job.id,
+                    "generation_status": "complete",
+                    "question_count_target": 3,
+                }
+            )
+            telemetry = _telemetry_summary(calls)
+            telemetry["cache_hit"] = cache_hit
+            with job._lock:
+                job.telemetry = telemetry
+                job.result = response
+                job.status = "complete"
+            finish_generation_log(job.id, {"status": "complete", **telemetry})
+        except Exception as exc:
+            GENERATION_LOGGER.exception(
+                "progressive_generation_failed generation_id=%s", job.id
+            )
+            append_generation_event(job, "failed", f"Generation failed: {exc}", {})
+            with job._lock:
+                job.status = "failed"
+                job.error = str(exc)
+            finish_generation_log(
+                job.id,
+                {
+                    "status": "failed",
+                    "cache_hit": cache_hit,
+                    "error_type": type(exc).__name__,
+                    "error": _logged_error(exc),
+                    **job.telemetry,
+                },
+            )
 
     @application.get("/api/health")
     def health() -> dict[str, str]:
@@ -336,6 +623,8 @@ def create_app(
             ],
             "difficulties": [difficulty.value for difficulty in Difficulty],
             "providers": ("codex", "claude"),
+            "modes": [mode.value for mode in SessionMode],
+            "roles": ROLE_TRACKS,
         }
 
     @application.post("/api/exercises")
@@ -356,14 +645,64 @@ def create_app(
                 detail="The bundled demo is DuckDB-native. Generate a new set to practice "
                 f"{DIALECT_NAMES[payload.dialect]} syntax.",
             )
+        if payload.demo and payload.mode is SessionMode.ADVANCED:
+            raise HTTPException(
+                status_code=400,
+                detail="The bundled demo is Standard Mode only. Generate an Advanced set instead.",
+            )
+        if payload.mode is SessionMode.ADVANCED and payload.role_track is None:
+            raise HTTPException(
+                status_code=422, detail="Advanced Mode requires a target role."
+            )
+        if payload.mode is SessionMode.STANDARD and payload.role_track is not None:
+            raise HTTPException(
+                status_code=422, detail="Standard Mode does not accept a target role."
+            )
         request = ExerciseRequest(
             company=payload.company,
             dialect=payload.dialect,
             difficulty=payload.difficulty,
             additional_context=payload.additional_context,
+            mode=payload.mode,
+            role_track=payload.role_track,
         )
+        generation_id = uuid4().hex[:12]
+        started_at = time.perf_counter()
+        log_context = {
+            "generation_id": generation_id,
+            "company": payload.company,
+            "dialect": payload.dialect.value,
+            "difficulty": payload.difficulty.value,
+            "provider": payload.provider,
+            "mode": payload.mode.value,
+            "role_track": payload.role_track.value if payload.role_track else None,
+            "demo": payload.demo,
+            "save_history": payload.save_history,
+            "additional_context_length": len(payload.additional_context),
+        }
+        GENERATION_LOGGER.info(
+            "generation_started %s", json.dumps(log_context, sort_keys=True)
+        )
+        history.start_generation(generation_id, {**log_context, "cache_key": None})
+        history.record_generation_event(
+            generation_id,
+            1,
+            {
+                "stage": "generation",
+                "message": "Generating the shared dataset and three questions.",
+                "elapsed_seconds": 0.0,
+                "metadata": {"demo": payload.demo},
+            },
+        )
+        telemetry_calls: list[LLMGeneration] = []
         try:
-            exercise_set = factory(request, payload.provider, payload.demo)
+            if exercise_factory is None and not payload.demo:
+                exercise_set, telemetry = generate_exercise_set_with_telemetry(
+                    request, payload.provider
+                )
+                telemetry_calls.append(telemetry)
+            else:
+                exercise_set = factory(request, payload.provider, payload.demo)
             stored = (
                 history.create_session(exercise_set, request, payload.provider)
                 if payload.save_history
@@ -394,10 +733,155 @@ def create_app(
                 stored.summary.id if stored else None,
             )
         except (ExerciseGenerationError, LLMProviderError) as exc:
+            finish_generation_log(
+                generation_id,
+                {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error": _logged_error(exc),
+                    **_telemetry_summary(telemetry_calls),
+                },
+            )
+            GENERATION_LOGGER.warning(
+                "generation_failed %s",
+                json.dumps(
+                    {
+                        **log_context,
+                        "duration_seconds": round(time.perf_counter() - started_at, 3),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+            )
             raise HTTPException(status_code=502, detail=str(exc)) from exc
         except SQLExecutionError as exc:
+            finish_generation_log(
+                generation_id,
+                {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error": _logged_error(exc),
+                    **_telemetry_summary(telemetry_calls),
+                },
+            )
+            GENERATION_LOGGER.warning(
+                "generation_failed %s",
+                json.dumps(
+                    {
+                        **log_context,
+                        "duration_seconds": round(time.perf_counter() - started_at, 3),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            finish_generation_log(
+                generation_id,
+                {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "error": _logged_error(exc),
+                    **_telemetry_summary(telemetry_calls),
+                },
+            )
+            GENERATION_LOGGER.exception(
+                "generation_failed %s",
+                json.dumps(
+                    {
+                        **log_context,
+                        "duration_seconds": round(time.perf_counter() - started_at, 3),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+            )
+            raise
+        GENERATION_LOGGER.info(
+            "generation_succeeded %s",
+            json.dumps(
+                {
+                    **log_context,
+                    "duration_seconds": round(time.perf_counter() - started_at, 3),
+                    "exercise_set_id": exercise_set.id,
+                    "history_id": stored.summary.id if stored else None,
+                    "questions": [
+                        {
+                            "id": question.id,
+                            "question_type": question.question_type.value,
+                            "task_summary": question.task_summary,
+                        }
+                        for question in exercise_set.questions
+                    ],
+                },
+                sort_keys=True,
+            ),
+        )
+        finish_generation_log(
+            generation_id,
+            {
+                "status": "complete",
+                **_telemetry_summary(telemetry_calls),
+            },
+        )
         return jsonable_encoder(response)
+
+    @application.post("/api/generations")
+    def start_progressive_generation(payload: CreateExercisePayload):
+        if payload.demo:
+            raise HTTPException(
+                status_code=400,
+                detail="Progressive generation does not apply to the instant demo.",
+            )
+        if payload.mode is not SessionMode.ADVANCED or payload.role_track is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Progressive generation requires Advanced Mode and a target role.",
+            )
+        if payload.dialect not in SUPPORTED_DIALECTS:
+            raise HTTPException(status_code=400, detail="Unsupported SQL dialect.")
+        request = ExerciseRequest(
+            company=payload.company,
+            dialect=payload.dialect,
+            difficulty=payload.difficulty,
+            additional_context=payload.additional_context,
+            mode=payload.mode,
+            role_track=payload.role_track,
+            reuse_cached_dataset=payload.reuse_cached_dataset,
+        )
+        cache_key = _cache_key(request)
+        metadata = {
+            "company": request.company,
+            "dialect": request.dialect.value,
+            "difficulty": request.difficulty.value,
+            "mode": request.mode.value,
+            "role_track": request.role_track.value,
+            "provider": payload.provider,
+            "cache_key": cache_key,
+        }
+        job = generation_jobs.create(metadata)
+        history.start_generation(job.id, metadata)
+        append_generation_event(
+            job,
+            "queued",
+            "Generation queued. Checking for a reusable local dataset.",
+            {"reuse_cached_dataset": payload.reuse_cached_dataset},
+        )
+        generation_executor.submit(
+            run_progressive_generation, job, request, payload, cache_key
+        )
+        return {"generation_id": job.id, "status": job.status}
+
+    @application.get("/api/generations/{generation_id}")
+    def generation_status(generation_id: str):
+        job = generation_jobs.get(generation_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Generation log not found")
+        return jsonable_encoder(job.snapshot())
 
     @application.post("/api/sessions/{session_id}/run")
     def run_sql(session_id: str, payload: SQLPayload):
@@ -437,6 +921,17 @@ def create_app(
     @application.post("/api/sessions/{session_id}/doctor")
     def query_doctor(session_id: str, payload: SQLPayload):
         session = get_session(session_id)
+        if (
+            session.exercise.mode is SessionMode.ADVANCED
+            and not session.details_revealed
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Reveal the interviewer details before using Query Doctor so coaching "
+                    "does not expose staged requirements early."
+                ),
+            )
         try:
             result = session.run(payload.sql)
             execution: dict[str, object] = {
@@ -485,6 +980,17 @@ def create_app(
             )
         return {"hint": hint, "remaining": remaining}
 
+    @application.post("/api/sessions/{session_id}/interviewer-details")
+    def reveal_interviewer_details(session_id: str):
+        session = get_session(session_id)
+        session.reveal_interviewer_details()
+        return jsonable_encoder(
+            {
+                "clarifications": session.exercise.clarifications,
+                "requirements": _requirements(session.exercise),
+            }
+        )
+
     @application.post("/api/sessions/{session_id}/solution")
     def reveal_solution(session_id: str):
         session = get_session(session_id)
@@ -492,9 +998,21 @@ def create_app(
             history.record_solution_reveal(
                 session.practice_session_id, session.history_question_id
             )
+        case_rubric = [
+            criterion.model_dump() for criterion in session.exercise.case_rubric
+        ]
+        reference_discussion = list(session.exercise.reference_discussion)
+        if (
+            session.exercise.question_type.value == "analytical_case"
+            and not case_rubric
+            and not reference_discussion
+        ):
+            case_rubric, reference_discussion = _default_case_review(session.exercise)
         return {
             "reference_sql": session.exercise.reference_sql,
             "explanation": session.exercise.explanation,
+            "case_rubric": case_rubric,
+            "reference_discussion": reference_discussion,
         }
 
     @application.post("/api/sessions/{session_id}/reset")
@@ -548,6 +1066,11 @@ def create_app(
 
     @application.delete("/api/history")
     def clear_history():
+        if generation_jobs.has_running():
+            raise HTTPException(
+                status_code=409,
+                detail="Wait for active question generation to finish before clearing history.",
+            )
         return {"deleted_count": history.clear()}
 
     @application.get("/")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,7 +10,13 @@ from fastapi.testclient import TestClient
 from sql_lab.exercises import get_static_exercise_set
 from sql_lab.feedback import QueryDoctorError, QueryDoctorFeedback
 from sql_lab.history import SQLiteHistoryRepository
-from sql_lab.models import ExerciseRequest, ExerciseSet
+from sql_lab.llm.base import (
+    LLMGeneration,
+    LLMProvider,
+    LLMTimeoutError,
+    LLMUsage,
+)
+from sql_lab.models import ExerciseRequest, ExerciseSet, SessionMode
 from sql_lab.web.app import create_app
 
 
@@ -32,6 +40,61 @@ class RecordingExerciseFactory:
                 ],
             }
         )
+        if request.mode is SessionMode.ADVANCED:
+            payload = exercise_set.model_dump(mode="json")
+            payload["mode"] = "advanced"
+            payload["role_track"] = request.role_track.value
+            question_types = ("sql_build", "sql_debug", "analytical_case")
+            topics = (
+                ["cohort_retention", "window_functions"],
+                ["sql_debugging", "data_quality", "ai_generated_code_review"],
+                ["experimentation", "causal_inference", "metric_design"],
+            )
+            for index, question in enumerate(payload["questions"]):
+                question["question_type"] = question_types[index]
+                question["modern_topics"] = topics[index]
+                question["clarifications"] = [
+                    {
+                        "candidate_question": "What population is eligible?",
+                        "interviewer_answer": "Use every entity present in the base table.",
+                    },
+                    {
+                        "candidate_question": "How should missing activity be treated?",
+                        "interviewer_answer": "Retain it and apply the stated zero-value rule.",
+                    },
+                ]
+                question["starter_sql"] = (
+                    "SELECT segment, COUNT(*) FROM orders GROUP BY segment"
+                    if index == 1
+                    else None
+                )
+                question["case_rubric"] = []
+                question["reference_discussion"] = []
+            payload["questions"][2]["case_rubric"] = [
+                {
+                    "criterion": name,
+                    "strong_signal": signal,
+                    "common_miss": "Treating the SQL result as the complete decision.",
+                }
+                for name, signal in (
+                    (
+                        "Problem framing",
+                        "Connect the analysis to the stakeholder decision.",
+                    ),
+                    ("Metric design", "Define the metric, population, and grain."),
+                    ("Data quality", "Check instrumentation and missingness."),
+                    (
+                        "Recommendation",
+                        "State a decision with uncertainty and tradeoffs.",
+                    ),
+                )
+            ]
+            payload["questions"][2]["reference_discussion"] = [
+                "Define the decision and guardrail metrics before interpreting movement.",
+                "Check instrumentation and segment effects before attributing causality.",
+                "Recommend an action while naming uncertainty and follow-up evidence.",
+            ]
+            exercise_set = ExerciseSet.model_validate(payload)
         self.exercise_sets.append(exercise_set)
         return exercise_set
 
@@ -90,12 +153,17 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
     assert page.status_code == 200
     assert "Which company are you preparing for?" in page.text
     assert "Additional context" in page.text
-    assert "Target role" not in page.text
+    assert "Target role" in page.text
+    assert "Advanced" in page.text
+    assert 'id="generationStatus"' in page.text
+    assert 'id="reuseDatasetInput"' in page.text
+    assert 'id="loadingEvents"' in page.text
+    assert 'id="generationProgress"' in page.text
     assert "SQL dialect" in page.text
     assert "Concepts to practice" not in page.text
     assert "Query Doctor" in page.text
     assert "See More" in page.text
-    assert "/assets/app.js?v=0.8.0" in page.text
+    assert "/assets/app.js?v=0.9.0" in page.text
     assert client.get("/favicon.ico").status_code == 200
     assert options.status_code == 200
     assert [company["name"] for company in options.json()["companies"]] == [
@@ -106,7 +174,14 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
         "Netflix",
         "Another company",
     ]
-    assert "roles" not in options.json()
+    assert [role["id"] for role in options.json()["roles"]] == [
+        "product_analytics",
+        "data_science",
+        "analytics_engineering",
+        "data_engineering",
+        "ai_product_safety",
+    ]
+    assert options.json()["modes"] == ["standard", "advanced"]
     assert "concepts" not in options.json()
     assert [dialect["id"] for dialect in options.json()["dialects"]] == [
         "duckdb",
@@ -122,8 +197,158 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
         for dialect in options.json()["dialects"][1:]
     )
     assert app_script.status_code == 200
+    assert "showGenerationFailure(error.message)" in app_script.text
+    assert 'fetchJson("/api/generations"' in app_script.text
+    assert "pollGeneration(started.generation_id)" in app_script.text
+    assert "updateGenerationControls()" in app_script.text
+    assert "consecutivePollFailures >= 4" in app_script.text
+    assert "showToast(error.message, true, 12000)" in app_script.text
     assert page.headers["cache-control"] == "no-store"
     assert app_script.headers["cache-control"] == "no-store"
+
+
+def test_generation_result_is_logged(web_client, caplog) -> None:
+    client, _ = web_client
+
+    with caplog.at_level(logging.INFO, logger="uvicorn.error.sql_lab.generation"):
+        created = create_session(client, mode="standard")
+
+    messages = [record.getMessage() for record in caplog.records]
+    started = next(message for message in messages if "generation_started" in message)
+    succeeded = next(
+        message for message in messages if "generation_succeeded" in message
+    )
+    assert '"mode": "standard"' in started
+    assert f'"exercise_set_id": "{created["set_id"]}"' in succeeded
+    assert '"question_type": "sql_build"' in succeeded
+    assert '"duration_seconds":' in succeeded
+
+
+def test_generation_failure_is_logged(tmp_path, caplog) -> None:
+    def timed_out_factory(*_):
+        raise LLMTimeoutError("LLM CLI timed out after 1200 seconds")
+
+    application = create_app(
+        timed_out_factory, SQLiteHistoryRepository(tmp_path / "history.db")
+    )
+    with TestClient(application) as client:
+        with caplog.at_level(
+            logging.WARNING, logger="uvicorn.error.sql_lab.generation"
+        ):
+            response = client.post(
+                "/api/exercises",
+                json=exercise_payload(mode="advanced", role_track="product_analytics"),
+            )
+
+    assert response.status_code == 502
+    failed = next(
+        record.getMessage()
+        for record in caplog.records
+        if "generation_failed" in record.getMessage()
+    )
+    assert '"mode": "advanced"' in failed
+    assert '"error_type": "LLMTimeoutError"' in failed
+    assert "timed out after 1200 seconds" in failed
+
+
+def test_advanced_generation_streams_first_question_and_logs_usage(
+    tmp_path, monkeypatch
+) -> None:
+    factory = RecordingExerciseFactory()
+    advanced_request = ExerciseRequest(
+        company="Meta",
+        difficulty="medium",
+        additional_context="Focus on creator retention.",
+        mode="advanced",
+        role_track="product_analytics",
+    )
+    generated_set = factory(advanced_request, "codex", False)
+    shared = generated_set.model_dump(mode="json")
+    questions = shared.pop("questions")
+    questions[1]["starter_sql"] = (
+        "SELECT customer_id, COUNT(*) AS order_count FROM orders GROUP BY customer_id"
+    )
+
+    class StagedProvider(LLMProvider):
+        prompts: list[str] = []
+
+        def generate(self, prompt, *, output_schema=None):
+            return self.generate_with_metadata(prompt, output_schema=output_schema).text
+
+        def generate_with_metadata(self, prompt, *, output_schema=None):
+            self.prompts.append(prompt)
+            if "foundation for an advanced" in prompt:
+                payload = {"dataset": shared, "question": questions[0]}
+            elif "sql_debug question" in prompt:
+                payload = {"question": questions[1]}
+            elif "analytical_case question" in prompt:
+                payload = {"question": questions[2]}
+            else:
+                payload = {"question": questions[0]}
+            return LLMGeneration(
+                text=json.dumps(payload),
+                provider="codex",
+                cli="codex",
+                cli_version="codex-cli 0.test",
+                model="gpt-test",
+                usage=LLMUsage(input_tokens=100, output_tokens=20, total_tokens=120),
+            )
+
+    provider = StagedProvider()
+    monkeypatch.setattr("sql_lab.services.create_provider", lambda *_: provider)
+    repository = SQLiteHistoryRepository(tmp_path / "history.db")
+    application = create_app(history_repository=repository)
+
+    with TestClient(application) as client:
+        started = client.post(
+            "/api/generations",
+            json=exercise_payload(
+                mode="advanced",
+                role_track="product_analytics",
+                reuse_cached_dataset=True,
+            ),
+        )
+        assert started.status_code == 200
+        generation_id = started.json()["generation_id"]
+        deadline = time.monotonic() + 5
+        saw_partial = False
+        while time.monotonic() < deadline:
+            progress = client.get(f"/api/generations/{generation_id}").json()
+            saw_partial = saw_partial or progress["partial_result"] is not None
+            if progress["status"] != "running":
+                break
+            time.sleep(0.01)
+
+        assert progress["status"] == "complete", progress
+        assert saw_partial
+        assert len(progress["result"]["questions"]) == 3
+        assert progress["telemetry"]["model"] == "gpt-test"
+        assert progress["telemetry"]["prompt_count"] == 3
+        assert progress["telemetry"]["total_tokens"] == 360
+        assert any(event["stage"] == "ready_1" for event in progress["events"])
+
+        second = client.post(
+            "/api/generations",
+            json=exercise_payload(
+                mode="advanced",
+                role_track="product_analytics",
+                reuse_cached_dataset=True,
+            ),
+        ).json()
+        while time.monotonic() < deadline + 5:
+            second_progress = client.get(
+                f"/api/generations/{second['generation_id']}"
+            ).json()
+            if second_progress["status"] != "running":
+                break
+            time.sleep(0.01)
+
+    assert second_progress["status"] == "complete", second_progress
+    assert second_progress["telemetry"]["cache_hit"] is True
+    assert any(event["stage"] == "cache" for event in second_progress["events"])
+    assert (
+        sum("foundation for an advanced" in prompt for prompt in provider.prompts) == 1
+    )
 
 
 def test_custom_company_and_additional_context_are_forwarded(web_client) -> None:
@@ -153,6 +378,71 @@ def test_custom_company_and_additional_context_are_forwarded(web_client) -> None
     assert created["history_id"]
 
 
+def test_advanced_mode_is_role_calibrated_and_stages_interviewer_details(
+    web_client,
+) -> None:
+    client, factory = web_client
+
+    created = create_session(
+        client,
+        mode="advanced",
+        role_track="ai_product_safety",
+    )
+
+    request, _, _ = factory.requests[-1]
+    assert request.mode.value == "advanced"
+    assert request.role_track.value == "ai_product_safety"
+    assert created["mode"] == "advanced"
+    assert created["role_track"] == "ai_product_safety"
+    assert [question["question_type"] for question in created["questions"]] == [
+        "sql_build",
+        "sql_debug",
+        "analytical_case",
+    ]
+    assert all(question["requirements"] == [] for question in created["questions"])
+    assert created["questions"][1]["starter_sql"]
+    assert "case_rubric" not in json.dumps(created)
+    assert "reference_discussion" not in json.dumps(created)
+
+    case_question = created["questions"][2]
+    guarded_doctor = client.post(
+        f"/api/sessions/{case_question['session_id']}/doctor",
+        json={"sql": "SELECT 1"},
+    )
+    details = client.post(
+        f"/api/sessions/{case_question['session_id']}/interviewer-details"
+    )
+    solution = client.post(f"/api/sessions/{case_question['session_id']}/solution")
+
+    assert guarded_doctor.status_code == 409
+    assert details.status_code == 200
+    assert len(details.json()["clarifications"]) == 2
+    assert details.json()["requirements"]
+    assert len(solution.json()["case_rubric"]) == 4
+    assert len(solution.json()["reference_discussion"]) == 3
+
+
+def test_advanced_mode_requires_role_and_demo_remains_standard_only(web_client) -> None:
+    client, factory = web_client
+
+    missing_role = client.post("/api/exercises", json=exercise_payload(mode="advanced"))
+    advanced_demo = client.post(
+        "/api/exercises",
+        json=exercise_payload(
+            company="Airbnb",
+            mode="advanced",
+            role_track="product_analytics",
+            demo=True,
+        ),
+    )
+
+    assert missing_role.status_code == 422
+    assert "target role" in missing_role.json()["detail"]
+    assert advanced_demo.status_code == 400
+    assert "Standard Mode only" in advanced_demo.json()["detail"]
+    assert factory.requests == []
+
+
 def test_public_exercise_has_real_table_samples_but_no_hidden_solution(
     web_client,
 ) -> None:
@@ -165,8 +455,8 @@ def test_public_exercise_has_real_table_samples_but_no_hidden_solution(
     assert "seed_sql" not in serialized
     assert "hidden_datasets" not in serialized
     assert len(created["questions"]) == 3
-    assert created["questions"][0]["task_summary"] == (
-        "Measure completed-order conversion and revenue by customer segment."
+    assert created["questions"][0]["task_summary"].startswith(
+        "A marketplace growth team wants to understand"
     )
     assert len(created["questions"][0]["requirements"]) == 5
     assert len({question["session_id"] for question in created["questions"]}) == 3
@@ -339,6 +629,23 @@ def test_hints_and_solution_require_explicit_endpoints(web_client) -> None:
     assert stored["questions"][0]["solution_revealed"] is True
 
 
+def test_each_question_exposes_its_own_solution_endpoint(web_client) -> None:
+    client, factory = web_client
+    created = create_session(client)
+    exercises = factory.exercise_sets[-1].exercises()
+
+    responses = [
+        client.post(f"/api/sessions/{question['session_id']}/solution")
+        for question in created["questions"]
+    ]
+
+    assert all(response.status_code == 200 for response in responses)
+    assert [response.json()["reference_sql"] for response in responses] == [
+        exercise.reference_sql for exercise in exercises
+    ]
+    assert len({response.json()["reference_sql"] for response in responses}) == 3
+
+
 def test_bundled_demo_cannot_be_mislabeled_as_another_company(web_client) -> None:
     client, factory = web_client
 
@@ -414,6 +721,29 @@ def test_history_can_resume_after_application_restart(tmp_path) -> None:
     assert "reference_sql" not in json.dumps(resumed.json())
 
 
+def test_advanced_history_preserves_mode_role_and_staged_details(tmp_path) -> None:
+    path = tmp_path / "advanced-history.db"
+    factory = RecordingExerciseFactory()
+    first_app = create_app(factory, SQLiteHistoryRepository(path))
+    with TestClient(first_app) as first_client:
+        created = create_session(
+            first_client,
+            mode="advanced",
+            role_track="data_engineering",
+        )
+
+    second_app = create_app(factory, SQLiteHistoryRepository(path))
+    with TestClient(second_app) as second_client:
+        resumed = second_client.post(f"/api/history/{created['history_id']}/resume")
+
+    assert resumed.status_code == 200
+    assert resumed.json()["mode"] == "advanced"
+    assert resumed.json()["role_track"] == "data_engineering"
+    assert all(
+        question["requirements"] == [] for question in resumed.json()["questions"]
+    )
+
+
 def test_history_session_can_be_deleted(web_client) -> None:
     client, _ = web_client
     created = create_session(client)
@@ -433,3 +763,16 @@ def test_history_can_be_disabled_for_a_question_set(web_client) -> None:
 
     assert created["history_id"] is None
     assert client.get("/api/history").json()["sessions"] == []
+
+
+def test_history_cannot_be_cleared_during_generation(tmp_path) -> None:
+    application = create_app(
+        RecordingExerciseFactory(),
+        SQLiteHistoryRepository(tmp_path / "history.db"),
+    )
+    with TestClient(application) as client:
+        application.state.generation_jobs.create({"company": "Meta"})
+        response = client.delete("/api/history")
+
+    assert response.status_code == 409
+    assert "generation" in response.json()["detail"]

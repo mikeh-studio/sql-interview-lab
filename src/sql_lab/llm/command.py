@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from sql_lab.llm.base import (
@@ -14,9 +16,31 @@ from sql_lab.llm.base import (
 )
 
 
-def run_cli_command(
+@dataclass(frozen=True)
+class CLICommandResult:
+    stdout: str
+    stderr: str
+
+
+@lru_cache(maxsize=8)
+def cli_version(executable: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    version = (completed.stdout or completed.stderr).strip()
+    return version or None
+
+
+def run_cli_process(
     command: Sequence[str], prompt: str, *, timeout_seconds: float
-) -> str:
+) -> CLICommandResult:
     """Run an argv vector with stdin input; never invoke a shell."""
 
     if not command:
@@ -52,7 +76,13 @@ def run_cli_command(
     response = completed.stdout.strip()
     if not response:
         raise LLMProviderError("LLM CLI returned an empty response")
-    return response
+    return CLICommandResult(stdout=response, stderr=completed.stderr.strip())
+
+
+def run_cli_command(
+    command: Sequence[str], prompt: str, *, timeout_seconds: float
+) -> str:
+    return run_cli_process(command, prompt, timeout_seconds=timeout_seconds).stdout
 
 
 class CommandLLMProvider(LLMProvider):

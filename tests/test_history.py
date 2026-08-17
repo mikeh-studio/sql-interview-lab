@@ -127,5 +127,103 @@ def test_clear_history_returns_deleted_count(tmp_path) -> None:
     repository.create_session(get_static_exercise_set(), request(), "codex")
     repository.create_session(get_static_exercise_set(), request(), "codex")
 
+    repository.start_generation(
+        "generation-to-clear",
+        {
+            "company": "Airbnb-style",
+            "dialect": "duckdb",
+            "difficulty": "medium",
+            "mode": "standard",
+            "role_track": None,
+            "provider": "codex",
+            "cache_key": None,
+        },
+    )
+
     assert repository.clear() == 2
     assert repository.list_sessions() == []
+    with sqlite3.connect(repository.path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM generation_runs").fetchone()[0]
+            == 0
+        )
+        assert (
+            connection.execute("SELECT COUNT(*) FROM dataset_cache").fetchone()[0] == 0
+        )
+
+
+def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
+    repository = SQLiteHistoryRepository(tmp_path / "history.db")
+    repository.initialize()
+    dataset_payload = get_static_exercise_set().model_dump(mode="json")
+    dataset_payload.update({"mode": "advanced", "role_track": "data_science"})
+    dataset_payload.pop("questions")
+    from sql_lab.models import SharedExerciseDataset
+
+    dataset = SharedExerciseDataset.model_validate(dataset_payload)
+    fields = {
+        "company": "Airbnb-style",
+        "dialect": "duckdb",
+        "difficulty": "medium",
+        "mode": "advanced",
+        "role_track": "data_science",
+        "provider": "codex",
+        "cache_key": "cache-1",
+    }
+
+    repository.start_generation("generation-1", fields)
+    repository.record_generation_event(
+        "generation-1",
+        1,
+        {
+            "stage": "dataset",
+            "message": "Generating compact data.",
+            "elapsed_seconds": 1.25,
+            "metadata": {},
+        },
+    )
+    repository.finish_generation(
+        "generation-1",
+        {
+            "status": "complete",
+            "cli": "codex",
+            "model": "gpt-5.6-sol",
+            "prompt_count": 3,
+            "input_tokens": 300,
+            "output_tokens": 90,
+            "total_tokens": 390,
+        },
+    )
+    repository.put_cached_dataset("cache-1", dataset)
+
+    assert repository.get_cached_dataset("cache-1") == dataset
+    with sqlite3.connect(repository.path) as connection:
+        run = connection.execute(
+            "SELECT model, prompt_count, total_tokens FROM generation_runs"
+        ).fetchone()
+        event = connection.execute(
+            "SELECT stage, message FROM generation_events"
+        ).fetchone()
+    assert run == ("gpt-5.6-sol", 3, 390)
+    assert event == ("dataset", "Generating compact data.")
+
+
+def test_dataset_cache_retains_only_fifty_recent_entries(tmp_path) -> None:
+    repository = SQLiteHistoryRepository(tmp_path / "history.db")
+    repository.initialize()
+    payload = get_static_exercise_set().model_dump(mode="json")
+    payload.update({"mode": "advanced", "role_track": "data_science"})
+    payload.pop("questions")
+    from sql_lab.models import SharedExerciseDataset
+
+    dataset = SharedExerciseDataset.model_validate(payload)
+    for index in range(51):
+        repository.put_cached_dataset(f"cache-{index:02d}", dataset)
+
+    with sqlite3.connect(repository.path) as connection:
+        keys = {
+            row[0] for row in connection.execute("SELECT cache_key FROM dataset_cache")
+        }
+    assert len(keys) == 50
+    assert "cache-00" not in keys
+    assert "cache-50" in keys
