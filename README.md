@@ -1,5 +1,8 @@
 # Data Interview Lab
 
+[![CI](https://github.com/mikeh-studio/data-interview-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeh-studio/data-interview-lab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Data Interview Lab is a local data-interview practice environment with a browser workspace
 and terminal interface. The current release focuses on SQL; Python practice is planned for
 a later iteration. An LLM creates exercise content, DuckDB executes both the learner's query
