@@ -36,3 +36,6 @@ jobs:
 
       - name: Test
         run: python -m pytest -q
+
+      - name: Build distribution
+        run: python -m build

@@ -12,6 +12,7 @@ build/
 .env
 .env.*
 !.env.example
+.data-interview-lab/
 .sql-interview-lab/
 *.db
 *.db-shm

@@ -7,17 +7,17 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from sql_lab.exercises import get_static_exercise_set
-from sql_lab.feedback import QueryDoctorError, QueryDoctorFeedback
-from sql_lab.history import SQLiteHistoryRepository
-from sql_lab.llm.base import (
+from data_interview_lab.exercises import get_static_exercise_set
+from data_interview_lab.feedback import QueryDoctorError, QueryDoctorFeedback
+from data_interview_lab.history import SQLiteHistoryRepository
+from data_interview_lab.llm.base import (
     LLMGeneration,
     LLMProvider,
     LLMTimeoutError,
     LLMUsage,
 )
-from sql_lab.models import ExerciseRequest, ExerciseSet, SessionMode
-from sql_lab.web.app import create_app
+from data_interview_lab.models import ExerciseRequest, ExerciseSet, SessionMode
+from data_interview_lab.web.app import create_app
 
 
 class RecordingExerciseFactory:
@@ -153,7 +153,8 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
     assert page.status_code == 200
     assert "Which company are you preparing for?" in page.text
     assert "Additional context" in page.text
-    assert "Target role" in page.text
+    assert "Focus Area" in page.text
+    assert "Target role" not in page.text
     assert "Advanced" in page.text
     assert 'id="generationStatus"' in page.text
     assert 'id="reuseDatasetInput"' in page.text
@@ -163,7 +164,12 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
     assert "Concepts to practice" not in page.text
     assert "Query Doctor" in page.text
     assert "See More" in page.text
-    assert "/assets/app.js?v=0.9.0" in page.text
+    assert "/assets/app.js?v=0.9.2" in page.text
+    assert 'id="modelConfiguration"' in page.text
+    assert 'id="modelOverrideInput"' in page.text
+    assert 'id="reasoningEffortInput"' in page.text
+    assert "Follow Codex CLI settings" in page.text
+    assert "Override for this interview" in page.text
     assert client.get("/favicon.ico").status_code == 200
     assert options.status_code == 200
     assert [company["name"] for company in options.json()["companies"]] == [
@@ -175,13 +181,29 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
         "Another company",
     ]
     assert [role["id"] for role in options.json()["roles"]] == [
-        "product_analytics",
-        "data_science",
+        "ai_product_safety",
         "analytics_engineering",
         "data_engineering",
-        "ai_product_safety",
+        "data_science",
+        "product_analytics",
     ]
+    assert [role["name"] for role in options.json()["roles"]] == sorted(
+        role["name"] for role in options.json()["roles"]
+    )
+    assert all(
+        company.get("logo_path", "").startswith("/assets/brands/")
+        for company in options.json()["companies"]
+        if company["id"] != "custom"
+    )
+    for company in options.json()["companies"]:
+        if logo_path := company.get("logo_path"):
+            assert client.get(logo_path).status_code == 200
     assert options.json()["modes"] == ["standard", "advanced"]
+    assert set(options.json()["codex_configuration"]) == {
+        "model",
+        "reasoning_effort",
+        "source",
+    }
     assert "concepts" not in options.json()
     assert [dialect["id"] for dialect in options.json()["dialects"]] == [
         "duckdb",
@@ -197,12 +219,18 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
         for dialect in options.json()["dialects"][1:]
     )
     assert app_script.status_code == 200
+    assert "roleTrackChoices" in app_script.text
+    assert "roleTrackSelect" not in app_script.text
     assert "showGenerationFailure(error.message)" in app_script.text
     assert 'fetchJson("/api/generations"' in app_script.text
     assert "pollGeneration(started.generation_id)" in app_script.text
     assert "updateGenerationControls()" in app_script.text
     assert "consecutivePollFailures >= 4" in app_script.text
     assert "showToast(error.message, true, 12000)" in app_script.text
+    assert "model_override: modelOverride || null" in app_script.text
+    assert (
+        "reasoning_effort_override: reasoningEffortOverride || null" in app_script.text
+    )
     assert page.headers["cache-control"] == "no-store"
     assert app_script.headers["cache-control"] == "no-store"
 
@@ -210,7 +238,9 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
 def test_generation_result_is_logged(web_client, caplog) -> None:
     client, _ = web_client
 
-    with caplog.at_level(logging.INFO, logger="uvicorn.error.sql_lab.generation"):
+    with caplog.at_level(
+        logging.INFO, logger="uvicorn.error.data_interview_lab.generation"
+    ):
         created = create_session(client, mode="standard")
 
     messages = [record.getMessage() for record in caplog.records]
@@ -224,6 +254,41 @@ def test_generation_result_is_logged(web_client, caplog) -> None:
     assert '"duration_seconds":' in succeeded
 
 
+def test_model_overrides_are_forwarded_without_changing_cli_defaults(
+    web_client,
+) -> None:
+    client, factory = web_client
+
+    created = create_session(
+        client,
+        model_override="gpt-future-7",
+        reasoning_effort_override="ultra_next",
+    )
+
+    request, provider, demo = factory.requests[-1]
+    assert created["generation_telemetry"]["requested_model"] == "gpt-future-7"
+    assert created["generation_telemetry"]["requested_reasoning_effort"] == "ultra_next"
+    assert (
+        created["generation_telemetry"]["configuration_source"] == "interview_override"
+    )
+    assert request.model_override == "gpt-future-7"
+    assert request.reasoning_effort_override == "ultra_next"
+    assert provider == "codex"
+    assert demo is False
+
+
+def test_model_overrides_are_rejected_for_non_codex_provider(web_client) -> None:
+    client, _ = web_client
+
+    response = client.post(
+        "/api/exercises",
+        json=exercise_payload(provider="claude", model_override="claude-future"),
+    )
+
+    assert response.status_code == 422
+    assert "supported for Codex CLI only" in response.json()["detail"]
+
+
 def test_generation_failure_is_logged(tmp_path, caplog) -> None:
     def timed_out_factory(*_):
         raise LLMTimeoutError("LLM CLI timed out after 1200 seconds")
@@ -233,7 +298,7 @@ def test_generation_failure_is_logged(tmp_path, caplog) -> None:
     )
     with TestClient(application) as client:
         with caplog.at_level(
-            logging.WARNING, logger="uvicorn.error.sql_lab.generation"
+            logging.WARNING, logger="uvicorn.error.data_interview_lab.generation"
         ):
             response = client.post(
                 "/api/exercises",
@@ -295,7 +360,9 @@ def test_advanced_generation_streams_first_question_and_logs_usage(
             )
 
     provider = StagedProvider()
-    monkeypatch.setattr("sql_lab.services.create_provider", lambda *_: provider)
+    monkeypatch.setattr(
+        "data_interview_lab.services.create_provider", lambda *_: provider
+    )
     repository = SQLiteHistoryRepository(tmp_path / "history.db")
     application = create_app(history_repository=repository)
 
@@ -437,7 +504,7 @@ def test_advanced_mode_requires_role_and_demo_remains_standard_only(web_client) 
     )
 
     assert missing_role.status_code == 422
-    assert "target role" in missing_role.json()["detail"]
+    assert "focus area" in missing_role.json()["detail"]
     assert advanced_demo.status_code == 400
     assert "Standard Mode only" in advanced_demo.json()["detail"]
     assert factory.requests == []
