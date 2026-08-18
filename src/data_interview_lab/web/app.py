@@ -389,9 +389,7 @@ def _telemetry_summary(calls: list[LLMGeneration]) -> dict[str, object]:
             call.configuration_source for call in calls if call.configuration_source
         )
     )
-    resolved_model = ", ".join(models) or (
-        "CLI default (not reported)" if calls else None
-    )
+    resolved_model = ", ".join(models) or None
     resolved_reasoning_effort = ", ".join(reasoning_efforts) or None
     return {
         "provider": calls[0].provider if calls else None,
@@ -425,8 +423,14 @@ def _configuration_telemetry(
         }
     configured = resolve_codex_configuration(settings.codex_command)
     overridden = bool(requested_model or requested_effort)
-    model = requested_model or configured.model
-    reasoning_effort = requested_effort or configured.reasoning_effort
+    model = requested_model or (
+        configured.model if configured.model_is_authoritative else None
+    )
+    reasoning_effort = requested_effort or (
+        configured.reasoning_effort
+        if configured.reasoning_effort_is_authoritative
+        else None
+    )
     return {
         "provider": "codex",
         "requested_model": requested_model,
@@ -727,6 +731,10 @@ def create_app(
                 "model": codex_configuration.model,
                 "reasoning_effort": codex_configuration.reasoning_effort,
                 "source": codex_configuration.source,
+                "model_is_authoritative": (codex_configuration.model_is_authoritative),
+                "reasoning_effort_is_authoritative": (
+                    codex_configuration.reasoning_effort_is_authoritative
+                ),
             },
         }
 

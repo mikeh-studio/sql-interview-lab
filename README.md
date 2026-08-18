@@ -3,34 +3,35 @@
 [![CI](https://github.com/mikeh-studio/data-interview-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/mikeh-studio/data-interview-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Data Interview Lab is a local data-interview practice environment with a browser workspace
-and terminal interface. The current release focuses on SQL; Python practice is planned for
-a later iteration. An LLM creates exercise content, DuckDB executes both the learner's query
-and a hidden reference query, and a deterministic grader compares the actual results.
+Data Interview Lab is a local SQL interview-practice environment with browser and terminal
+interfaces. LLMs create exercises; DuckDB execution and deterministic comparison decide
+whether an answer is correct.
 
 The current SQL experience includes:
 
-- an offline static exercise for a zero-LLM execution/grading loop
-- structured three-question set generation through the Codex CLI by default
-- an interchangeable local CLI provider for Claude
-- Pydantic validation for every generated exercise
-- native DuckDB execution plus explicitly labeled warehouse-dialect emulation
-- fresh in-memory DuckDB databases for runs and submissions
-- visible and hidden grading datasets
-- result comparison for columns, rows, duplicates, NULLs, ordering, and numeric tolerance
-- a company-first browser flow with preset or user-entered companies
-- optional free-text context applied to the complete question set
-- exactly three questions sharing one schema and the same visible/hidden datasets
-- a split question/editor/results workspace with real example rows from DuckDB
-- task-first prompts with compact business context and expandable exact requirements
-- an additive Advanced Mode with focus-area SQL build, debugging, and analytical-case tasks
-- staged interviewer clarifications plus a non-scoring case self-review rubric
-- a Query Doctor tab that executes and grades first, then requests structured CLI coaching
-- resumable local browser history with append-only submission records
-- a Rich interactive practice shell
+- offline static practice or structured three-question generation
+- Codex CLI by default, with Claude CLI as an interchangeable local provider
+- strict Pydantic validation before any generated exercise runs
+- native DuckDB execution and clearly labeled warehouse-dialect emulation
+- fresh databases plus visible and hidden grading datasets
+- deterministic comparison of columns, rows, duplicates, NULLs, ordering, and numeric tolerance
+- company-first browser setup, shared datasets, and task-first prompts
+- Standard and Advanced interview modes, including debugging and analytical-case practice
+- Query Doctor coaching only after execution and grading
+- resumable local history with append-only submissions
 
 Company labels describe fictional interview-style approximations. The project does not
 claim that generated schemas represent proprietary company systems.
+
+## Screenshots
+
+### Company-first setup
+
+![Choose a company style before configuring the interview](docs/images/company-selection.jpg)
+
+### SQL workspace
+
+![Run SQL locally and inspect deterministic DuckDB results](docs/images/sql-workspace.jpg)
 
 ## Why execution, not LLM grading
 
@@ -109,8 +110,7 @@ source .venv/bin/activate
 python -m pip install -e '.[dev]'
 ```
 
-On a machine where a newer Python has a different executable name, use that executable
-instead (for example, `python3.13`).
+If needed, substitute another Python 3.12+ executable such as `python3.13`.
 
 ## Launch the browser interface
 
@@ -125,9 +125,8 @@ different port or keep the browser closed when needed:
 data-interview-lab --web --port 9000 --no-open
 ```
 
-If the lab is already running, repeating `data-interview-lab --web` reopens that existing session
-instead of failing on the occupied port. If your shell cannot find `data-interview-lab`, activate the
-project environment first:
+If the lab is already running, the same command reopens it. If the executable is not found,
+activate the project environment first:
 
 ```bash
 source .venv/bin/activate
@@ -136,35 +135,21 @@ data-interview-lab --web
 
 The former `sql-lab` command remains available as a compatibility alias during the rename.
 
-The browser journey is deliberately staged:
+The browser flow is staged:
 
-1. Select a preset company style or enter any company or organization name. No question
-   is generated before this selection.
-2. Choose a SQL dialect, difficulty, and local CLI provider, and optionally describe
-   extra context.
+1. Select a preset company style or enter another organization.
+2. Choose a dialect, difficulty, provider, and optional context.
 3. Generate three questions over one shared dataset, or use the instant Airbnb demo.
-4. Move among the three questions while inspecting the same DDL and example rows.
-5. Write and run SQL, then submit each answer against visible and hidden datasets.
-6. Open **Query Doctor** to run the same deterministic checks and ask the selected CLI
-   provider for focused coaching without revealing the reference SQL.
-7. Open **Previous sessions** to resume or delete locally saved work.
+4. Run SQL and submit answers against visible and hidden datasets.
+5. Use **Query Doctor** for post-grade coaching or **Previous sessions** to resume work.
 
-Standard Mode preserves the original three-question SQL practice flow. Advanced Mode adds a
-focus area and generates one SQL construction problem, one inherited or AI-generated SQL
-debugging problem, and one decision-oriented analytical case with a deterministically graded SQL
-deliverable. Advanced requirements and interviewer answers remain hidden until explicitly
-requested. The analytical-case rubric is for self-review and optional coaching; it never overrides
-the database grader or produces an automated hiring score.
+Standard Mode provides three SQL problems. Advanced Mode adds a focus area, SQL construction,
+debugging, and an analytical case with a deterministically graded SQL deliverable. Its rubric is
+for self-review only; it never overrides the database grader or assigns a hiring score.
 
-Advanced generation is progressive: it creates a compact shared dataset and validates Question 1
-first, then opens the lab while Questions 2 and 3 generate concurrently. A matching dataset can be
-reused from the local cache when **Reuse a matching local dataset** is enabled. Review-only case
-rubric content is assembled only when the solution is opened, keeping it out of the initial LLM
-payload.
-
-Run resets the visible database from seed data before every execution. The web response
-does not include seed SQL, hidden datasets, or reference SQL. The reference solution is
-returned only after the user explicitly chooses **View solution** and confirms.
+Advanced Mode validates Question 1 and opens the lab while Questions 2 and 3 generate in
+parallel. It can reuse a matching local dataset. Every run reseeds DuckDB; hidden data and
+reference SQL stay server-side until **View solution** is explicitly confirmed.
 
 ## Local session history
 
@@ -174,27 +159,20 @@ Browser sessions are saved by default to:
 ~/.data-interview-lab/history.db
 ```
 
-If the new database does not exist but `~/.sql-interview-lab/history.db` does, the application
-reuses that existing database in place. It does not copy, move, or delete practice history.
+An existing `~/.sql-interview-lab/history.db` is reused in place when the renamed path does
+not yet exist.
 
-Each three-question set stores one validated exercise snapshot plus compact, append-only
-submission records. History also remembers the latest submitted SQL, pass/fail state,
-revealed-hint count, and whether the solution was revealed. It does **not** persist
-in-memory DuckDB databases, routine `.run` output, expected result tables, credentials, or
-provider environment variables.
+Saved sets contain the validated exercise, latest SQL, pass/fail state, revealed hints, solution
+state, and append-only submissions. They exclude routine run output, expected results,
+credentials, and provider environment variables. The default retention limit is 200 sets.
 
-The same private SQLite file also keeps a compact generation audit log: stages, elapsed time,
-provider and CLI identity, resolved model when available, cache usage, prompt count, and token
-usage reported by the CLI. Prompts, LLM responses, reference SQL, and generated rows are not copied
-into that audit log. The separate dataset cache necessarily stores the generated shared DDL and
-rows locally so they can be reused; it retains the 50 most recently used datasets. Disable the
-reuse checkbox to bypass it for a new generation. **Clear all history** also removes generation
-logs and cached datasets.
+The same private SQLite file stores a compact generation audit: stages, duration, CLI identity,
+resolved model, cache use, and reported prompt/token counts. It excludes prompts, responses,
+reference SQL, and generated rows. A separate local cache retains the 50 most recently used
+shared datasets. **Clear all history** removes sessions, audit logs, and cached datasets.
 
-Use the **Save this session locally** checkbox to opt out before generating a set. From
-**Previous sessions**, a saved set can be resumed after a server restart, deleted
-individually, or cleared in full. The active session is protected from deletion until you
-leave it. By default, the oldest session is removed after 200 saved sessions.
+Use **Save this session locally** to opt out. **Previous sessions** can resume, delete, or clear
+saved work after a restart.
 
 The path and retention limit are configurable:
 
@@ -204,21 +182,14 @@ export DATA_INTERVIEW_LAB_HISTORY_LIMIT=200
 data-interview-lab --web
 ```
 
-Renamed `DATA_INTERVIEW_LAB_*` variables take precedence. Existing `SQL_LAB_*` variables
-remain supported during the compatibility period.
-
-The application writes through a `HistoryRepository` interface. SQLite remains the local
-operational store; a future BigQuery exporter can map the same stable IDs, UTC timestamps,
-typed metadata, schema version, exercise JSON, and append-only submissions without
-changing the practice-session code. Cloud export is not enabled in this release.
+`DATA_INTERVIEW_LAB_*` variables take precedence; existing `SQL_LAB_*` names remain supported
+during the compatibility period.
 
 ## Security and privacy
 
-Keep the web server on its default `127.0.0.1` address. The MVP has no authentication and
-accepts SQL that executes through DuckDB, so it is not safe to expose on a public interface
-or untrusted network. Generated exercises and personal attempt history remain local and
-must not be added to source control. See [SECURITY.md](SECURITY.md) for the complete local
-deployment and practice-data guidance.
+Keep the unauthenticated server on its default `127.0.0.1` address; do not expose it to an
+untrusted network. Exercises and attempt history remain local and should not enter source
+control. See [SECURITY.md](SECURITY.md) for full guidance.
 
 ## Run the offline exercise
 
@@ -246,23 +217,23 @@ Useful commands inside the shell:
 Ending a SQL statement with `;` runs it immediately. `.submit` never compares SQL text
 and does not reveal the reference SQL.
 
-## Codex CLI setup and generated exercises
+## Generate exercises with Codex CLI
 
-Codex is the default provider. Install and sign in using the
-[official Codex CLI instructions](https://learn.chatgpt.com/docs/codex/cli). Verify that
-this works before starting the lab:
+Codex is the default provider. Follow the
+[official Codex CLI instructions](https://learn.chatgpt.com/docs/codex/cli), sign in, and verify
+the installation:
 
 ```bash
 codex --version
 ```
 
-Then run:
+Start an interactive generated session:
 
 ```bash
 data-interview-lab
 ```
 
-or provide selections non-interactively before entering the SQL shell:
+Or provide the setup non-interactively:
 
 ```bash
 data-interview-lab \
@@ -273,11 +244,9 @@ data-interview-lab \
   --additional-context "Focus on subscription retention and patient engagement"
 ```
 
-The adapter invokes `codex exec` without a shell, passes the prompt on stdin, uses a
-read-only sandbox, requests a response matching the Exercise JSON Schema, and validates
-the returned JSON again locally. It uses the Codex JSONL event stream to capture reported
-token usage and the final-message file to keep structured output separate from progress events.
-Codex CLI authentication is reused; this application does not require an API credential.
+The adapter calls `codex exec` with stdin, `shell=False`, a read-only sandbox, and an Exercise
+JSON Schema. It validates the response locally and reuses Codex CLI authentication, so no API
+key is required.
 
 The command prefix and timeout are configurable without changing application code:
 
@@ -288,34 +257,11 @@ export DATA_INTERVIEW_LAB_ADVANCED_LLM_TIMEOUT=1200
 data-interview-lab --llm codex
 ```
 
-Standard Mode has a 600-second generation timeout. Each Advanced Mode provider call has a
-separate 1,200-second default; Question 1 and its compact dataset are generated first, while the
-remaining two calls run concurrently after Question 1 passes SQL validation. Override the
-deadlines independently with `DATA_INTERVIEW_LAB_LLM_TIMEOUT` and `DATA_INTERVIEW_LAB_ADVANCED_LLM_TIMEOUT`.
+Standard Mode defaults to 600 seconds. Each Advanced Mode call defaults to 1,200 seconds; the
+remaining questions run concurrently after Question 1 passes validation.
 
-`DATA_INTERVIEW_LAB_CODEX_COMMAND` is parsed as an argv vector and executed with `shell=False`.
-Do not include the final prompt sentinel or `--output-schema`; the adapter supplies both.
-
-## Example session
-
-```text
-$ data-interview-lab --static
-────────────────────── AIRBNB-STYLE — MEDIUM ──────────────────────
-Tables
-  • customers — One row per marketplace customer account.
-  • orders — One row per order attempt, including cancelled orders.
-
-Question
-For every customer segment, report January 2025 completed-order performance...
-
-sql> SELECT segment, COUNT(*) AS customer_count ...;
-┏━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┓
-┃ segment    ┃ customer_count ┃ converting_customers ┃ conversion_rate ┃ completed_revenue ┃
-┗━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━┛
-sql> .submit
-
-PASS — matched on all 2 grading dataset(s).
-```
+Do not add the final prompt sentinel or `--output-schema` to
+`DATA_INTERVIEW_LAB_CODEX_COMMAND`; the adapter supplies both.
 
 ## Optional Claude CLI provider
 
@@ -332,14 +278,11 @@ Override its command prefix if needed:
 export DATA_INTERVIEW_LAB_CLAUDE_COMMAND='claude --print --no-session-persistence --permission-mode dontAsk --tools ""'
 ```
 
-The Claude adapter also uses stdin, `shell=False`, and the CLI's native JSON Schema flag.
+The Claude adapter also uses stdin, `shell=False`, and native JSON Schema output.
 
 ## Optional API providers
 
-The `LLMProvider` boundary is ready for an API-backed adapter, but `openai-api` is not
-implemented in the current release. No API package or secret is needed. A future optional
-adapter can read credentials from environment variables without replacing Codex CLI as the
-default.
+API-backed providers are not implemented in this release; no API package or secret is needed.
 
 ## Dialect support
 
@@ -352,12 +295,9 @@ default.
 | Databricks SQL | `databricks` | Emulated locally through SQLGlot and DuckDB |
 | Presto | `presto` | Emulated locally through SQLGlot and DuckDB |
 
-The selected dialect is used for generated DDL, seed SQL, reference SQL, user-query
-parsing, and grading. The browser and CLI always label whether execution is native or
-emulated. Emulation deliberately excludes cloud-only services, external objects, UDFs,
-semi-structured features that cannot be represented faithfully, and engine-specific
-behavior SQLGlot cannot translate. Native warehouse backends remain a later extension of
-the `SQLEngine` interface.
+The selected dialect applies to generation, parsing, and grading. The UI always labels native
+versus emulated execution. Emulation excludes cloud-only services, external objects, UDFs, and
+engine-specific behavior SQLGlot cannot translate faithfully.
 
 ## Tests
 
@@ -365,22 +305,12 @@ the `SQLEngine` interface.
 pytest
 ```
 
-The suite covers correct and equivalent SQL, incorrect results and mismatch examples,
-ordering, duplicate rows, NULLs, numeric tolerance, syntax errors, schema validation,
-DuckDB reset/isolation, visible-versus-hidden grading, CLI subprocess failures, and
-malformed LLM JSON, Codex token telemetry, and all five emulated dialect paths. History tests cover SQLite
-persistence across restarts, append-only submissions, retention pruning, opt-out, resume,
-deletion, generation-event persistence, and dataset caching. Browser API tests also cover
-company gating, dialect selection and execution labels, three-question sets,
-shared table previews, custom company and optional-context forwarding, session reseeding,
-query errors, hints, explicit solution access, visible/hidden submission results, and the
-deterministic-before-LLM Query Doctor contract. The progressive API test verifies Question 1-first
-delivery, concurrent set completion, cache reuse, and aggregated model/token metadata.
+The suite covers deterministic grading, engine isolation, all emulated dialects, CLI failures,
+structured generation, progressive loading, local history/cache behavior, and browser API flows.
 
 ## Roadmap
 
-- a Python interview-practice track alongside the current SQL track
-- persistent company packs and explicit Practice/Interview/Review policies
-- an optional OpenAI API provider and native engines for additional SQL dialects
-- timers, optional BigQuery history export, additional hidden datasets, editor
-  autocomplete, and saved company-specific exercise analytics
+- Python interview practice
+- persistent company packs and Practice/Interview/Review policies
+- optional API providers and native warehouse engines
+- timers, editor autocomplete, richer hidden datasets, and optional history export

@@ -7,6 +7,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from data_interview_lab.config import Settings
 from data_interview_lab.exercises import get_static_exercise_set
 from data_interview_lab.feedback import QueryDoctorError, QueryDoctorFeedback
 from data_interview_lab.history import SQLiteHistoryRepository
@@ -201,7 +202,9 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
     assert options.json()["modes"] == ["standard", "advanced"]
     assert set(options.json()["codex_configuration"]) == {
         "model",
+        "model_is_authoritative",
         "reasoning_effort",
+        "reasoning_effort_is_authoritative",
         "source",
     }
     assert "concepts" not in options.json()
@@ -231,6 +234,8 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
     assert (
         "reasoning_effort_override: reasoningEffortOverride || null" in app_script.text
     )
+    assert "project or managed settings may override it" in app_script.text
+    assert "ignores base user config" in app_script.text
     assert page.headers["cache-control"] == "no-store"
     assert app_script.headers["cache-control"] == "no-store"
 
@@ -268,6 +273,8 @@ def test_model_overrides_are_forwarded_without_changing_cli_defaults(
     request, provider, demo = factory.requests[-1]
     assert created["generation_telemetry"]["requested_model"] == "gpt-future-7"
     assert created["generation_telemetry"]["requested_reasoning_effort"] == "ultra_next"
+    assert created["generation_telemetry"]["resolved_model"] == "gpt-future-7"
+    assert created["generation_telemetry"]["resolved_reasoning_effort"] == "ultra_next"
     assert (
         created["generation_telemetry"]["configuration_source"] == "interview_override"
     )
@@ -275,6 +282,49 @@ def test_model_overrides_are_forwarded_without_changing_cli_defaults(
     assert request.reasoning_effort_override == "ultra_next"
     assert provider == "codex"
     assert demo is False
+
+
+def test_detected_codex_defaults_are_not_reported_as_resolved(
+    tmp_path, monkeypatch
+) -> None:
+    config_root = tmp_path / "codex-home"
+    config_root.mkdir()
+    (config_root / "config.toml").write_text(
+        'model = "gpt-detected"\nmodel_reasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(config_root))
+    settings = Settings(
+        llm_provider="codex",
+        llm_timeout_seconds=600,
+        advanced_llm_timeout_seconds=1200,
+        codex_command=("codex", "exec"),
+        claude_command=("claude",),
+    )
+    factory = RecordingExerciseFactory()
+    application = create_app(
+        factory,
+        SQLiteHistoryRepository(tmp_path / "history.db"),
+        settings=settings,
+    )
+
+    with TestClient(application) as client:
+        configuration = client.get("/api/options").json()["codex_configuration"]
+        created = create_session(client)
+
+    assert configuration == {
+        "model": "gpt-detected",
+        "reasoning_effort": "high",
+        "source": "user_config",
+        "model_is_authoritative": False,
+        "reasoning_effort_is_authoritative": False,
+    }
+    telemetry = created["generation_telemetry"]
+    assert telemetry["model"] is None
+    assert telemetry["resolved_model"] is None
+    assert telemetry["reasoning_effort"] is None
+    assert telemetry["resolved_reasoning_effort"] is None
+    assert telemetry["configuration_source"] == "user_config"
 
 
 def test_model_overrides_are_rejected_for_non_codex_provider(web_client) -> None:
