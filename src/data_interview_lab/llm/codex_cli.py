@@ -26,6 +26,8 @@ class CodexConfiguration:
     model: str | None
     reasoning_effort: str | None
     source: str
+    model_is_authoritative: bool = False
+    reasoning_effort_is_authoritative: bool = False
 
 
 def _string(value: object) -> str | None:
@@ -47,16 +49,17 @@ def _read_config(path: Path) -> dict[str, object]:
 
 
 def resolve_codex_configuration(command: Sequence[str]) -> CodexConfiguration:
-    """Resolve the non-sensitive model settings visible to a Codex CLI command."""
+    """Detect non-sensitive Codex settings without claiming full CLI resolution."""
 
     profile: str | None = None
     command_model: str | None = None
     command_effort: str | None = None
+    ignore_user_config = "--ignore-user-config" in command
     for index, value in enumerate(command):
         if value in {"-m", "--model"} and index + 1 < len(command):
-            command_model = command[index + 1]
+            command_model = _string(command[index + 1])
         elif value.startswith("--model="):
-            command_model = value.partition("=")[2]
+            command_model = _string(value.partition("=")[2])
         if value in {"-p", "--profile"} and index + 1 < len(command):
             profile = command[index + 1]
         elif value.startswith("--profile="):
@@ -76,10 +79,15 @@ def resolve_codex_configuration(command: Sequence[str]) -> CodexConfiguration:
             command_effort = parsed
 
     config_root = Path(os.getenv("CODEX_HOME", Path.home() / ".codex"))
-    config = _read_config(config_root / "config.toml")
+    config = {} if ignore_user_config else _read_config(config_root / "config.toml")
     configured_model = _string(config.get("model"))
     configured_effort = _string(config.get("model_reasoning_effort"))
-    source = "user_config" if configured_model or configured_effort else "cli_default"
+    if configured_model or configured_effort:
+        source = "user_config"
+    elif ignore_user_config:
+        source = "cli_runtime"
+    else:
+        source = "cli_default"
     profiles = config.get("profiles")
     if profile and isinstance(profiles, dict):
         profile_config = profiles.get(profile)
@@ -103,11 +111,13 @@ def resolve_codex_configuration(command: Sequence[str]) -> CodexConfiguration:
         configured_model = command_model or configured_model
         configured_effort = command_effort or configured_effort
         source = "command_override"
-    return CodexConfiguration(configured_model, configured_effort, source)
-
-
-def _configured_model(command: Sequence[str]) -> str | None:
-    return resolve_codex_configuration(command).model
+    return CodexConfiguration(
+        configured_model,
+        configured_effort,
+        source,
+        model_is_authoritative=command_model is not None,
+        reasoning_effort_is_authoritative=command_effort is not None,
+    )
 
 
 def codex_command_with_overrides(
@@ -130,8 +140,8 @@ def _integer(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _codex_metadata(jsonl: str, command: Sequence[str]) -> tuple[str | None, LLMUsage]:
-    model = _configured_model(command)
+def _codex_metadata(jsonl: str) -> tuple[str | None, LLMUsage]:
+    model = None
     usage: dict[str, int | None] = {}
     for line in jsonl.splitlines():
         try:
@@ -224,15 +234,28 @@ class CodexCLIProvider(LLMProvider):
             response = output_path.read_text(encoding="utf-8").strip()
             if not response:
                 raise LLMProviderError("Codex CLI returned an empty final response")
-            model, usage = _codex_metadata(result.stdout, command)
+            reported_model, usage = _codex_metadata(result.stdout)
             configuration = resolve_codex_configuration(command)
+            model = reported_model or (
+                configuration.model if configuration.model_is_authoritative else None
+            )
+            reasoning_effort = (
+                configuration.reasoning_effort
+                if configuration.reasoning_effort_is_authoritative
+                else None
+            )
+            configuration_source = (
+                "cli_reported"
+                if reported_model and configuration.source != "command_override"
+                else configuration.source
+            )
             return LLMGeneration(
                 text=response,
                 provider="codex",
                 cli=command[0],
                 cli_version=cli_version(command[0]),
                 model=model,
-                reasoning_effort=configuration.reasoning_effort,
-                configuration_source=configuration.source,
+                reasoning_effort=reasoning_effort,
+                configuration_source=configuration_source,
                 usage=usage,
             )

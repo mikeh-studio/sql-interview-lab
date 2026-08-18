@@ -261,12 +261,25 @@ function formatReasoningEffort(value) {
 
 function renderModelConfiguration() {
   const configuration = state.options.codex_configuration || {};
-  const model = formatConfigurationValue(configuration.model, "Codex CLI default");
+  const model = formatConfigurationValue(configuration.model, "Codex chooses at run time");
   elements.modelDefaultSummary.textContent =
     `${model} · ${formatReasoningEffort(configuration.reasoning_effort)}`;
-  elements.modelDefaultHelp.textContent = configuration.source === "profile"
-    ? "Loaded from the active Codex profile; refresh this page after changing it."
-    : "Loaded from your current Codex CLI configuration; refresh after changing it.";
+  if (configuration.source === "cli_runtime") {
+    elements.modelDefaultHelp.textContent =
+      "The configured command ignores base user config; Codex resolves settings when generation starts.";
+  } else if (
+    configuration.model_is_authoritative ||
+    configuration.reasoning_effort_is_authoritative
+  ) {
+    elements.modelDefaultHelp.textContent =
+      "Includes explicit configured-command values; Codex resolves any remaining settings at run time.";
+  } else if (configuration.source === "profile") {
+    elements.modelDefaultHelp.textContent =
+      "Detected from the active Codex profile; project or managed settings may override it.";
+  } else {
+    elements.modelDefaultHelp.textContent =
+      "Detected from Codex user settings; project or managed settings may override it.";
+  }
   if (!elements.modelOverrideInput.value && configuration.model) {
     elements.modelOverrideInput.value = configuration.model;
   }
@@ -676,9 +689,12 @@ function renderModelStatus(telemetry = null) {
   }
   const model = telemetry.resolved_model || telemetry.model;
   const effort = telemetry.resolved_reasoning_effort || telemetry.reasoning_effort;
-  const source = telemetry.configuration_source === "interview_override"
-    ? "interview override"
-    : "CLI settings";
+  const sources = {
+    interview_override: "interview override",
+    cli_reported: "reported by Codex CLI",
+    command_override: "configured command",
+  };
+  const source = sources[telemetry.configuration_source] || "CLI settings";
   elements.modelStatus.textContent = [model, effort, source].filter(Boolean).join(" · ");
   elements.modelStatus.title = elements.modelStatus.textContent;
   elements.modelStatus.hidden = false;

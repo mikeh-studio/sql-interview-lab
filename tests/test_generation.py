@@ -344,8 +344,7 @@ def test_codex_json_events_capture_model_and_token_usage() -> None:
                     }
                 ),
             ]
-        ),
-        ("codex", "exec", "--json"),
+        )
     )
 
     assert model == "gpt-5.6-sol"
@@ -374,7 +373,7 @@ def test_codex_request_overrides_are_separate_cli_arguments() -> None:
     )
 
 
-def test_codex_configuration_resolves_user_defaults_and_command_overrides(
+def test_codex_configuration_detects_user_defaults_and_command_overrides(
     tmp_path, monkeypatch
 ) -> None:
     (tmp_path / "config.toml").write_text(
@@ -398,9 +397,45 @@ def test_codex_configuration_resolves_user_defaults_and_command_overrides(
     assert inherited.model == "gpt-configured"
     assert inherited.reasoning_effort == "high"
     assert inherited.source == "user_config"
+    assert inherited.model_is_authoritative is False
+    assert inherited.reasoning_effort_is_authoritative is False
     assert overridden.model == "gpt-future-7"
     assert overridden.reasoning_effort == "ultra_next"
     assert overridden.source == "command_override"
+    assert overridden.model_is_authoritative is True
+    assert overridden.reasoning_effort_is_authoritative is True
+
+
+def test_codex_configuration_honors_ignored_user_config(tmp_path, monkeypatch) -> None:
+    (tmp_path / "config.toml").write_text(
+        'model = "gpt-configured"\nmodel_reasoning_effort = "high"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    ignored = resolve_codex_configuration(("codex", "exec", "--ignore-user-config"))
+    overridden = resolve_codex_configuration(
+        (
+            "codex",
+            "exec",
+            "--ignore-user-config",
+            "--model",
+            "gpt-explicit",
+            "-c",
+            "model_reasoning_effort=xhigh",
+        )
+    )
+
+    assert ignored.model is None
+    assert ignored.reasoning_effort is None
+    assert ignored.source == "cli_runtime"
+    assert ignored.model_is_authoritative is False
+    assert ignored.reasoning_effort_is_authoritative is False
+    assert overridden.model == "gpt-explicit"
+    assert overridden.reasoning_effort == "xhigh"
+    assert overridden.source == "command_override"
+    assert overridden.model_is_authoritative is True
+    assert overridden.reasoning_effort_is_authoritative is True
 
 
 def test_claude_json_result_captures_structured_output_model_and_usage() -> None:
