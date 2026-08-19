@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import date
 
 from data_interview_lab.exercises import get_static_exercise_set
@@ -78,7 +79,7 @@ def test_history_is_append_only_and_marks_completion(tmp_path) -> None:
     assert restored.summary.submission_count == 4
     assert restored.summary.completed_at is not None
     assert restored.questions[0].submission_count == 2
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM submissions").fetchone()[0] == 4
 
 
@@ -106,7 +107,7 @@ def test_history_serializes_temporal_values_in_grading_diffs(tmp_path) -> None:
         },
     )
 
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         payload = json.loads(
             connection.execute(
                 "SELECT grading_summary_json FROM submissions"
@@ -122,7 +123,7 @@ def test_history_restores_legacy_questions_without_disclosure_fields(tmp_path) -
     repository.initialize()
     created = repository.create_session(get_static_exercise_set(), request(), "codex")
 
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         row = connection.execute("SELECT payload_json FROM exercise_sets").fetchone()
         payload = json.loads(row[0])
         for question in payload["questions"]:
@@ -151,7 +152,7 @@ def test_history_limit_prunes_oldest_session_and_delete_cascades(tmp_path) -> No
     assert repository.delete_session(newest.summary.id) is True
     assert repository.delete_session(newest.summary.id) is False
 
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM exercise_sets").fetchone()[0] == 1
         )
@@ -178,7 +179,7 @@ def test_clear_history_returns_deleted_count(tmp_path) -> None:
 
     assert repository.clear() == 2
     assert repository.list_sessions() == []
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM generation_runs").fetchone()[0]
             == 0
@@ -238,7 +239,7 @@ def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
     repository.put_cached_dataset("cache-1", dataset)
 
     assert repository.get_cached_dataset("cache-1") == dataset
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         run = connection.execute(
             """SELECT requested_model, requested_reasoning_effort, model,
                       reasoning_effort, configuration_source, prompt_count, total_tokens
@@ -271,7 +272,7 @@ def test_dataset_cache_retains_only_fifty_recent_entries(tmp_path) -> None:
     for index in range(51):
         repository.put_cached_dataset(f"cache-{index:02d}", dataset)
 
-    with sqlite3.connect(repository.path) as connection:
+    with closing(sqlite3.connect(repository.path)) as connection, connection:
         keys = {
             row[0] for row in connection.execute("SELECT cache_key FROM dataset_cache")
         }

@@ -24,6 +24,7 @@ dependencies = [
 dev = [
   "build>=1.2,<2",
   "httpx>=0.28,<1",
+  "playwright>=1.50,<2",
   "pytest>=8.3,<10",
   "pytest-cov>=5,<8",
   "ruff>=0.16.3,<0.17",
@@ -37,7 +38,8 @@ sql-lab = "data_interview_lab.cli:app"
 packages = ["src/data_interview_lab"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra --cov=data_interview_lab --cov-report=term-missing --cov-fail-under=75"
+filterwarnings = ["error::ResourceWarning"]
 testpaths = ["tests"]
 
 [tool.ruff.lint]

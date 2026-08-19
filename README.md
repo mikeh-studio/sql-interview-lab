@@ -305,6 +305,18 @@ engine-specific behavior SQLGlot cannot translate faithfully.
 pytest
 ```
 
+The unit and API suite enforces a 75% project coverage floor. Run the real-browser journey
+after installing its Chromium runtime:
+
+```bash
+python -m playwright install chromium
+pytest e2e -q --no-cov
+```
+
+The browser test starts the local server, loads the instant demo in Chromium, executes and
+submits the reference query against visible and hidden datasets, and verifies saved history.
+It does not call an LLM provider.
+
 The suite covers deterministic grading, engine isolation, all emulated dialects, CLI failures,
 structured generation, progressive loading, local history/cache behavior, and browser API flows.
 
