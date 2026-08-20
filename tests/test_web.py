@@ -153,6 +153,11 @@ def test_browser_shell_and_company_options_are_served(web_client) -> None:
 
     assert page.status_code == 200
     assert "Which company are you preparing for?" in page.text
+    assert "Independent and unofficial." in page.text
+    assert "not affiliated with or" in page.text
+    assert "endorsed by any company shown" in page.text
+    assert "not copied from or claimed to" in page.text
+    assert "real company interview questions" in page.text
     assert "Additional context" in page.text
     assert "Focus Area" in page.text
     assert "Target role" not in page.text

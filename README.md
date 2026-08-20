@@ -20,8 +20,11 @@ The current SQL experience includes:
 - Query Doctor coaching only after execution and grading
 - resumable local history with append-only submissions
 
-Company labels describe fictional interview-style approximations. The project does not
-claim that generated schemas represent proprietary company systems.
+Data Interview Lab is independent and unofficial; it is not affiliated with or endorsed by
+any company named in the app. Company selections describe fictional interview-style
+approximations. Generated questions, schemas, and data are fictional: they are not copied from
+or claimed to reproduce real company interview questions, proprietary systems, or confidential
+hiring materials.
 
 ## Screenshots
 
