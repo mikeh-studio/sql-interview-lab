@@ -7,29 +7,29 @@ from typing import Any
 
 import pytest
 
-from data_interview_lab.config import Settings
-from data_interview_lab.exercises import get_static_exercise
-from data_interview_lab.exercises.static import STATIC_EXERCISE_SET
-from data_interview_lab.generation.generator import (
+from sql_lab.config import Settings
+from sql_lab.exercises import get_static_exercise
+from sql_lab.exercises.static import STATIC_EXERCISE_SET
+from sql_lab.generation.generator import (
     ExerciseGenerationError,
     ExerciseGenerator,
 )
-from data_interview_lab.generation.schema import make_strict_output_schema
-from data_interview_lab.llm.base import (
+from sql_lab.generation.schema import make_strict_output_schema
+from sql_lab.llm.base import (
     LLMExecutableNotFoundError,
     LLMProvider,
     LLMProviderError,
 )
-from data_interview_lab.llm.codex_cli import (
+from sql_lab.llm.codex_cli import (
     _codex_metadata,
     codex_command_with_overrides,
     resolve_codex_configuration,
 )
-from data_interview_lab.llm.claude_cli import _parse_claude_envelope
-from data_interview_lab.llm.command import CommandLLMProvider
-from data_interview_lab.models import Dialect, Difficulty, ExerciseRequest
-from data_interview_lab.models import ExerciseSet, QuestionType, RoleTrack, SessionMode
-from data_interview_lab.services import generate_exercise_set, validate_exercise_runtime
+from sql_lab.llm.claude_cli import _parse_claude_envelope
+from sql_lab.llm.command import CommandLLMProvider
+from sql_lab.models import Dialect, Difficulty, ExerciseRequest
+from sql_lab.models import ExerciseSet, QuestionType, RoleTrack, SessionMode
+from sql_lab.services import generate_exercise_set, validate_exercise_runtime
 
 
 class FakeProvider(LLMProvider):
@@ -265,9 +265,7 @@ def test_advanced_generation_uses_separate_timeout(monkeypatch) -> None:
         captured_timeout = settings.llm_timeout_seconds
         return FakeProvider(json.dumps(advanced_payload()))
 
-    monkeypatch.setattr(
-        "data_interview_lab.services.create_provider", fake_create_provider
-    )
+    monkeypatch.setattr("sql_lab.services.create_provider", fake_create_provider)
     settings = Settings(
         llm_provider="codex",
         llm_timeout_seconds=600,
@@ -321,7 +319,7 @@ def test_cli_subprocess_failure_includes_exit_status() -> None:
 
 
 def test_missing_cli_executable_fails_clearly() -> None:
-    provider = CommandLLMProvider(("data-interview-lab-command-that-does-not-exist",))
+    provider = CommandLLMProvider(("sql-lab-command-that-does-not-exist",))
 
     with pytest.raises(LLMExecutableNotFoundError, match="not found"):
         provider.generate("prompt")

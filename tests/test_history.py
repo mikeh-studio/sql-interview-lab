@@ -5,9 +5,9 @@ import sqlite3
 from contextlib import closing
 from datetime import date
 
-from data_interview_lab.exercises import get_static_exercise_set
-from data_interview_lab.history import SQLiteHistoryRepository
-from data_interview_lab.models import Difficulty, ExerciseRequest
+from sql_lab.exercises import get_static_exercise_set
+from sql_lab.history import SQLiteHistoryRepository
+from sql_lab.models import Difficulty, ExerciseRequest
 
 
 def request() -> ExerciseRequest:
@@ -195,7 +195,7 @@ def test_generation_log_and_dataset_cache_are_persisted(tmp_path) -> None:
     dataset_payload = get_static_exercise_set().model_dump(mode="json")
     dataset_payload.update({"mode": "advanced", "role_track": "data_science"})
     dataset_payload.pop("questions")
-    from data_interview_lab.models import SharedExerciseDataset
+    from sql_lab.models import SharedExerciseDataset
 
     dataset = SharedExerciseDataset.model_validate(dataset_payload)
     fields = {
@@ -266,7 +266,7 @@ def test_dataset_cache_retains_only_fifty_recent_entries(tmp_path) -> None:
     payload = get_static_exercise_set().model_dump(mode="json")
     payload.update({"mode": "advanced", "role_track": "data_science"})
     payload.pop("questions")
-    from data_interview_lab.models import SharedExerciseDataset
+    from sql_lab.models import SharedExerciseDataset
 
     dataset = SharedExerciseDataset.model_validate(payload)
     for index in range(51):

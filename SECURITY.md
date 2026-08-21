@@ -1,6 +1,6 @@
 # Security and privacy
 
-Data Interview Lab is a local development tool. It has no authentication layer and allows
+SQL Interview Lab is a local development tool. It has no authentication layer and allows
 the person using the interface to execute SQL through DuckDB.
 
 ## Keep the server local
@@ -8,7 +8,7 @@ the person using the interface to execute SQL through DuckDB.
 Run the browser interface on its default loopback address:
 
 ```bash
-data-interview-lab --web
+sql-lab --web
 ```
 
 Do not bind the application to `0.0.0.0`, a public interface, or an untrusted network.
@@ -21,7 +21,7 @@ Generated exercises, additional context, submitted SQL, grading summaries, hints
 solution-reveal activity can be stored in the local history database. The default path is:
 
 ```text
-~/.data-interview-lab/history.db
+~/.sql-interview-lab/history.db
 ```
 
 History databases, environment files, virtual environments, caches, and common credential
