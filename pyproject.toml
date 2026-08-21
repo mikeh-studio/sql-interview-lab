@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "data-interview-lab"
+name = "sql-interview-lab"
 version = "0.9.2"
-description = "Local data interview practice with executable SQL and deterministic grading."
+description = "Local SQL interview practice with executable queries and deterministic grading."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -31,14 +31,14 @@ dev = [
 ]
 
 [project.scripts]
-data-interview-lab = "data_interview_lab.cli:app"
-sql-lab = "data_interview_lab.cli:app"
+sql-lab = "sql_lab.cli:app"
+data-interview-lab = "sql_lab.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/data_interview_lab"]
+packages = ["src/sql_lab"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --cov=data_interview_lab --cov-report=term-missing --cov-fail-under=75"
+addopts = "-ra --cov=sql_lab --cov-report=term-missing --cov-fail-under=75"
 filterwarnings = ["error::ResourceWarning"]
 testpaths = ["tests"]
 

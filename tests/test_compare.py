@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from data_interview_lab.engines.base import QueryResult
-from data_interview_lab.grading.compare import compare_results
-from data_interview_lab.models import GradingConfig
+from sql_lab.engines.base import QueryResult
+from sql_lab.grading.compare import compare_results
+from sql_lab.models import GradingConfig
 
 
 def result(columns: tuple[str, ...], *rows: tuple[object, ...]) -> QueryResult:

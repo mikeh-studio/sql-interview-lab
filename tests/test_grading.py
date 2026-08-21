@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from data_interview_lab.grading.grader import Grader
-from data_interview_lab.models import Exercise
+from sql_lab.grading.grader import Grader
+from sql_lab.models import Exercise
 
 
 EQUIVALENT_SQL = """
